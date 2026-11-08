@@ -6,7 +6,7 @@ CPPFLAGS = -Ibackend/include -lboost_json
 BOOST_PREFIX ?= $(shell brew --prefix boost 2>/dev/null)
 ifneq ($(strip $(BOOST_PREFIX)),)
 CPPFLAGS += -I"$(BOOST_PREFIX)/include"
-LDFLAGS += -L"$(BOOST_PREFIX)/lib"
+LDFLAGS += -L"$(BOOST_PREFIX)/lib" -lboost_json
 endif
 
 # Asio, Beast and Boost.System in this Boost version are header-only.
