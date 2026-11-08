@@ -1,6 +1,6 @@
 #include <iostream>
+#include <ostream>
 #include <string>
-#include <random>
 
 #include "world.hpp"
 #include "webserver.hpp"

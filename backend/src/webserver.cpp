@@ -1,16 +1,32 @@
-#include <boost/asio.hpp>
-#include <boost/beast.hpp>
-#include <boost/json.hpp>
+#include "webserver.hpp"
 
+#include <boost/asio/buffer.hpp>
+#include <boost/asio/io_context.hpp>
+#include <boost/asio/ip/tcp.hpp>
+#include <boost/beast/core/buffers_to_string.hpp>
+#include <boost/beast/core/flat_buffer.hpp>
+#include <boost/beast/core/role.hpp>
+#include <boost/beast/websocket/stream.hpp>
+#include <boost/beast/websocket/stream_base.hpp>
+#include <boost/json/object.hpp>
+#include <boost/json/parse.hpp>
+#include <boost/json/serialize.hpp>
+#include <boost/json/string.hpp>
+#include <boost/json/value.hpp>
+#include <boost/system/error_code.hpp>
+
+#include <cstddef>
 #include <cstdint>
 #include <deque>
+#include <exception>
+#include <functional>
 #include <iostream>
 #include <memory>
+#include <ostream>
 #include <string>
 #include <unordered_map>
-#include <functional>
+#include <utility>
 
-#include "webserver.hpp"
 #include "world.hpp"
 
 
@@ -27,12 +43,12 @@ class Client;
 // Контейнер подключённых клиентов
 class Server {
 public:
-    std::unordered_map<uint64_t, std::shared_ptr<Client>> clients;
-    uint64_t next_id = 1;
+    std::unordered_map<std::uint64_t, std::shared_ptr<Client>> clients;
+    std::uint64_t next_id = 1;
     World* world = nullptr;
 
     void broadcast(const std::string& message);
-    void remove_client(uint64_t id);
+    void remove_client(std::uint64_t id);
 };
 
 // Одно WebSocket-подключение
@@ -43,7 +59,7 @@ private:
     std::deque<std::string> messages_;
     Server& server_;
 
-    uint64_t id_ = 0;
+    std::uint64_t id_ = 0;
 
 public:
     Client(tcp::socket socket, Server& server)
@@ -73,7 +89,7 @@ public:
         );
     }
 
-    uint64_t id() const {
+    std::uint64_t id() const {
         return id_;
     }
 
@@ -183,7 +199,7 @@ void Server::broadcast(const std::string& message) {
 }
 
 // Удаление отключённого клиента
-void Server::remove_client(uint64_t id) {
+void Server::remove_client(std::uint64_t id) {
     if (clients.erase(id)) {
         std::cout << "Disconnected: " << id << '\n';
     }

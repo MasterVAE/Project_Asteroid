@@ -1,14 +1,17 @@
-#include <boost/asio.hpp>
-#include <boost/beast.hpp>
-#include <boost/json.hpp>
-
 #include "webserver.hpp"
+
+#include <boost/json/array.hpp>
+#include <boost/json/object.hpp>
+#include <boost/json/value.hpp>
+
+#include <string>
+#include <unordered_map>
+#include <utility>
+#include <vector>
+
 #include "world.hpp"
 
 namespace json = boost::json;
-namespace net = boost::asio;
-namespace beast = boost::beast;
-namespace websocket = beast::websocket;
 
 json::value GetMap(const World* world)
 {

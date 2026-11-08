@@ -1,10 +1,9 @@
 #pragma once
 
-#include <boost/asio.hpp>
-#include <boost/beast.hpp>
-#include <boost/json.hpp>
+#include <boost/json/value.hpp>
 
-#include "world.hpp"
+class World;
+class Entity;
 
 void LaunchWebServer(World* world);
 
