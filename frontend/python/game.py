@@ -1,13 +1,8 @@
 import os
 from asteroidAPI import AsteroidAPI
 
-api = AsteroidAPI(api_key=os.environ.get("ASTEROID_API_KEY"))
+api = AsteroidAPI(api_key='ast_key_756a0009048992ab3c58a3c2621bf6299f4a396780637f38fa2fb34bffb4ddad')
 
-try:
-    ships = [entity for entity in api.getMyEntities()["entities"] if entity["type"] == "craft"]
-    if ships:
-        print(api.flyTo(ships[0]["id"], 0, 0))
-    else:
-        print("Сначала создайте корабль в браузере.")
-finally:
-    api.disconnect()
+
+for i in range(1000):
+    api.createCraft()

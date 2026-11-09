@@ -20,7 +20,7 @@ Makefile                Сборка в build/app
 sudo apt update
 sudo apt install build-essential pkg-config libboost-all-dev libssl-dev libsqlite3-dev
 make
-ASTEROID_PUBLIC_ORIGIN=https://46.173.218.137 ./build/app world.json
+ASTEROID_PUBLIC_ORIGIN=https://46.173.218.137 nohup ./build/app world.json &
 ```
 
 На macOS: `brew install boost openssl sqlite pkg-config`, затем `make`.
@@ -112,7 +112,7 @@ SDK поддерживают одинаковые методы: `register`, `log
 
 [Полный контракт, примеры Python/JS и границы реализации](docs/authentication.md).
 Доступны аккаунты, общая карта, постоянный Principal владельца Entity и создание
-кораблей через `create_craft` с сессионной авторизацией. Компании и экономические
+кораблей через `create_craft` с сессией или API-ключом. Компании и экономические
 правила создания кораблей ещё предстоит реализовать.
 
 ## Проверки

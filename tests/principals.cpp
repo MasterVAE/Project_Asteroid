@@ -118,8 +118,12 @@ int main() {
             world.CreateEntity(bob->principal);
             const auto spoof = api.Handle("{\"type\":\"request\",\"request_type\":\"get_my_entities\",\"owner_id\":2}", active_session, "test", false);
             Expect(spoof.body == mine.body, "Client-supplied owner_id changed ownership filtering");
-            const auto rejected = api.Handle("{\"type\":\"request\",\"request_type\":\"create_craft\"}", token, "test", true);
-            Expect(rejected.status == 403, "Read-only key created a ship");
+            const auto key_created = api.Handle("{\"type\":\"request\",\"request_type\":\"create_craft\",\"owner_id\":2}", token, "test", false);
+            Expect(key_created.status == 200, "API key could not create a ship");
+            const auto& key_entity = key_created.body.as_object().at("result").as_object();
+            Expect(key_entity.at("owner_id").as_int64() == owner->user_id, "API key created a ship for another account");
+            Expect(world.GetEntities().at(key_entity.at("id").as_uint64())->owner == owner,
+                "API key ship has a temporary owner");
             const auto created = api.Handle("{\"type\":\"request\",\"request_type\":\"create_craft\"}", active_session, "test", true);
             Expect(created.status == 200, "Session could not create a ship");
             const auto& entity = created.body.as_object().at("result").as_object();
@@ -127,7 +131,7 @@ int main() {
             Expect(world.GetEntities().at(entity.at("id").as_uint64())->owner == owner, "API ship has a temporary owner");
             const auto refreshed = api.Handle(mine_request, active_session, "test", false);
             const auto& fleet = refreshed.body.as_object().at("result").as_object().at("entities").as_array();
-            Expect(fleet.size() == 2, "Newly created ship is missing from owned entities");
+            Expect(fleet.size() == 3, "Newly created ship is missing from owned entities");
             for (const auto& ship : fleet) Expect(ship.as_object().at("owner_id").as_int64() == owner->user_id,
                 "Foreign/server ship leaked into owned entities");
 

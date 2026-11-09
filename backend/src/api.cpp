@@ -123,8 +123,6 @@ principal->user_id
 */
 
         if (command == "create_craft") {
-            if (!context->is_session)
-                throw ApiError(403, "INSUFFICIENT_SCOPE", "API-ключ не разрешает создавать корабли.");
             return Success(CreateEntity(&world_, principal));
         }
 

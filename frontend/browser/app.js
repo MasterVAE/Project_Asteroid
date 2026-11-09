@@ -209,7 +209,7 @@ async function loadKeys() {
     const title = document.createElement('strong');
     title.textContent = key.name;
     const description = document.createElement('p');
-    description.textContent = `${key.prefix}… · до ${new Date(key.expires_at * 1000).toLocaleString('ru-RU')} · карта и полёт своих кораблей`;
+    description.textContent = `${key.prefix}… · до ${new Date(key.expires_at * 1000).toLocaleString('ru-RU')} · карта, создание и полёт своих кораблей`;
     const revoke = document.createElement('button');
     revoke.type = 'button';
     revoke.textContent = 'Отозвать';
