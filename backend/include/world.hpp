@@ -23,8 +23,7 @@ public:
 enum ENTITY_TYPE
 {
     ASTEROID,
-    SHIP,
-    STATION
+    CRAFT
 };
 
 class Entity
@@ -33,7 +32,7 @@ class Entity
     Vector2 velocity;
     ENTITY_TYPE type_;
 
-    std::size_t id_; // Unique identifier for the entity
+    std::size_t id_;
 
 
 public:
@@ -74,11 +73,38 @@ public:
     }
 };
 
+enum MODULE_TYPE
+{
+    MINING,
+    CRAFTING,
+    STORAGE
+};
+
+class Module
+{
+    MODULE_TYPE type_;
+
+public:
+    Module(MODULE_TYPE type) : type_(type) {}
+    MODULE_TYPE GetType() const { return type_; }
+};
+
+class Craft : public Entity
+{
+    std::vector<Module> modules;
+public:
+    std::vector<Module> GetModules() const { return modules; }
+    void AddModule(const Module& module) { modules.push_back(module); }
+    Craft(std::size_t id) : Entity(CRAFT, id) {}
+    Craft(const Vector2& pos, const Vector2& vel, std::size_t id) : Entity(pos, vel, CRAFT, id) {}
+};
+
 
 class World
 {
     std::unordered_map<std::size_t, Entity*> entities;
     std::unordered_map<std::size_t, Entity*> asteroids;
+    std::unordered_map<std::size_t, Entity*> crafts;
 
     Vector2 size{1000.0f, 1000.0f};
 

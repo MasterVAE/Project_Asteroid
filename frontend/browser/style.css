@@ -1,0 +1,41 @@
+:root { color-scheme: dark; font: 14px/1.5 system-ui, sans-serif; color: #dfebf8; background: #080e19; }
+* { box-sizing: border-box; }
+body { margin: 0; overflow: hidden; }
+#map { display: block; width: 100vw; height: 100vh; height: 100dvh; touch-action: none; cursor: grab; outline-offset: -3px; }
+#map:active { cursor: grabbing; }
+.panel { position: fixed; background: #101b2bef; border: 1px solid #283b54; border-radius: 12px; box-shadow: 0 8px 32px #0004; }
+header { top: 16px; left: 16px; width: min(650px, calc(100% - 32px)); padding: 16px; }
+.heading, form, footer, .toolbar { display: flex; align-items: center; gap: 10px; }
+.heading { justify-content: space-between; margin-bottom: 12px; flex-wrap: wrap; }
+strong { letter-spacing: .1em; }
+strong span { color: #8ba3bf; font-weight: 400; letter-spacing: 0; }
+#status { color: #e1b975; font-size: 12px; }
+#status[data-connected="true"] { color: #6ce3bd; }
+input, button { font: inherit; border: 1px solid #36506e; border-radius: 7px; padding: 8px 10px; color: inherit; background: #17283e; }
+input { flex: 1; min-width: 0; background: #080e19; }
+button { cursor: pointer; white-space: nowrap; }
+button:hover { background: #233c58; }
+button:disabled { opacity: .4; cursor: default; }
+input:focus-visible, button:focus-visible { outline: 2px solid #69d9ff; outline-offset: 2px; }
+#connect { background: #256b88; border-color: #378fac; }
+#message { color: #8ba3bf; margin: 10px 0 0; font-size: 12px; overflow-wrap: anywhere; }
+.toolbar { right: 16px; bottom: 74px; padding: 8px; flex-wrap: wrap; }
+footer { left: 16px; right: 16px; bottom: 16px; padding: 12px 16px; flex-wrap: wrap; color: #9eb2ca; }
+footer span { display: inline-flex; align-items: center; gap: 6px; }
+.hint { margin-left: auto; font-size: 12px; }
+i { display: inline-block; width: 9px; height: 9px; }
+i.asteroid { border-radius: 50%; background: #d7ad77; }
+i.craft { background: #6edbff; clip-path: polygon(50% 0, 100% 100%, 50% 75%, 0 100%); }
+#selection { left: 16px; top: 182px; padding: 16px; width: 260px; max-height: calc(100dvh - 320px); overflow: auto; }
+#selection h2 { margin: 0 0 10px; font-size: 16px; }
+#selection p { margin: 6px 0; color: #aabdd3; }
+.sr-only { position: absolute; width: 1px; height: 1px; padding: 0; overflow: hidden; clip: rect(0, 0, 0, 0); }
+@media (max-width: 640px) {
+  header { top: 8px; left: 8px; width: calc(100% - 16px); padding: 12px; }
+  form { flex-wrap: wrap; }
+  input { flex-basis: 100%; }
+  footer { bottom: 8px; left: 8px; right: 8px; gap: 12px; padding: 10px; font-size: 12px; }
+  .hint { display: none; }
+  .toolbar { right: 8px; bottom: 62px; }
+  #selection { top: 208px; left: 8px; max-height: calc(100dvh - 330px); width: 230px; }
+}

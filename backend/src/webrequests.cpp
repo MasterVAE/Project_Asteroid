@@ -20,10 +20,20 @@ json::value GetMap(const World* world)
     json::array entities_array;
     for (const auto& entity : world->GetEntities()) {
         json::object entity_obj;
+        entity_obj["id"] = entity.first;
 
-
-        // FIXME: Determine the type of entity and set the appropriate fields
-        entity_obj["type"] = "asteroid"; // Assuming all entities are asteroids for now
+        if(entity.second->GetType() == ASTEROID)
+        {
+            entity_obj["type"] = "asteroid";
+        }
+        else if(entity.second->GetType() == CRAFT)
+        {
+            entity_obj["type"] = "craft";
+        }
+        else
+        {
+            entity_obj["type"] = "unknown";
+        }
         entity_obj["position"] = { {"x", entity.second->GetPosition().x}, {"y", entity.second->GetPosition().y} };
         entity_obj["velocity"] = { {"x", entity.second->GetVelocity().x}, {"y", entity.second->GetVelocity().y} };
 
@@ -38,12 +48,13 @@ json::value GetMap(const World* world)
 
 json::value GetEntity(const Entity* entity)
 {
-    if(entity->GetType() == ASTEROID)
+    if(entity->GetType() == ENTITY_TYPE::ASTEROID)
     {
         const Asteroid* asteroid = dynamic_cast<const Asteroid*>(entity);
         if(asteroid)
         {
             json::object entity_obj;
+            entity_obj["id"] = asteroid->GetId();
             entity_obj["type"] = "asteroid";
             entity_obj["position"] = { {"x", asteroid->GetPosition().x}, {"y", asteroid->GetPosition().y} };
             entity_obj["velocity"] = { {"x", asteroid->GetVelocity().x}, {"y", asteroid->GetVelocity().y} };
@@ -60,6 +71,28 @@ json::value GetEntity(const Entity* entity)
             return entity_obj;
         }
     }
+    else if (entity->GetType() == ENTITY_TYPE::CRAFT)
+    {
+        const Craft* craft = dynamic_cast<const Craft*>(entity);
+        if(craft)
+        {
+            json::object entity_obj;
+            entity_obj["id"] = craft->GetId();
+            entity_obj["type"] = "craft";
+            entity_obj["position"] = { {"x", craft->GetPosition().x}, {"y", craft->GetPosition().y} };
+            entity_obj["velocity"] = { {"x", craft->GetVelocity().x}, {"y", craft->GetVelocity().y} };
 
-    return json::object(); // Return an empty object if the entity is not an asteroid
+            json::array modules_array;
+            for (const auto& module : craft->GetModules()) {
+                json::object module_obj;
+                module_obj["type"] = module.GetType();
+                modules_array.push_back(module_obj);
+            }
+            entity_obj["modules"] = modules_array;
+
+            return entity_obj;
+        }
+    }
+
+    return json::object(); // Return an empty object if the entity is not an asteroid or craft
 }

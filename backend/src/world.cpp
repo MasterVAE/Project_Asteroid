@@ -72,4 +72,15 @@ World::World()
         entities.insert({asteroid->GetId(), asteroid});
         asteroids.insert({asteroid->GetId(), asteroid});
     }
+    for (int i = 0; i < 10; ++i)
+    {
+        float x = dist(gen);
+        float y = dist(gen);
+
+        Craft* craft = new Craft(Vector2(x, y), Vector2(0.0f, 0.0f), next_entity_id++);
+        craft->AddModule(Module(MINING));
+        craft->AddModule(Module(STORAGE));
+        entities.insert({craft->GetId(), craft});
+        crafts.insert({craft->GetId(), craft});
+    }
 }

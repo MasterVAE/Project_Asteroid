@@ -2,8 +2,10 @@
 import websocket
 import json
 import threading
+import sys
 
-SERVER_URL = "ws://localhost:8080"
+LOCAL_SERVER_URL = "ws://localhost:8080"
+SERVER_URL = "ws://46.173.218.137:8080"
 
 def SendJSONMessage(message):
     data = {
@@ -102,6 +104,9 @@ def SendJSONMessage(message):
         "content": message
     }
     return json.dumps(data)
+
+if(sys.argv[1] == "local"):
+    SERVER_URL = LOCAL_SERVER_URL
 
 ws = websocket.WebSocketApp(
     SERVER_URL,

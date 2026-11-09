@@ -1,0 +1,32 @@
+<!doctype html>
+<html lang="ru">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <meta name="theme-color" content="#080e19">
+  <title>Asteroid — карта мира</title>
+  <link rel="stylesheet" href="style.css">
+</head>
+<body>
+  <canvas id="map" aria-label="Карта астероидов и кораблей. Перетаскивайте карту и используйте колесо для масштаба." tabindex="0"></canvas>
+  <header class="panel">
+    <div class="heading"><strong>ASTEROID <span>/ карта мира</span></strong><span id="status" role="status">Нет подключения</span></div>
+    <form id="connection">
+      <label class="sr-only" for="server">WebSocket-адрес сервера</label>
+      <input id="server" type="url" placeholder="ws://SERVER_IP:8080" required spellcheck="false" aria-label="WebSocket-адрес сервера">
+      <button id="connect" type="submit">Подключиться</button>
+      <button id="disconnect" type="button" disabled>Отключить</button>
+    </form>
+    <p id="message">Укажите адрес сервера. Карта обновляется раз в секунду.</p>
+  </header>
+  <aside id="selection" class="panel" hidden aria-live="polite"></aside>
+  <div class="toolbar panel" aria-label="Управление картой">
+    <button id="zoom-in" type="button" aria-label="Увеличить">+</button>
+    <button id="zoom-out" type="button" aria-label="Уменьшить">−</button>
+    <button id="fit" type="button">Вся карта</button>
+    <button id="fullscreen" type="button">Полный экран</button>
+  </div>
+  <footer class="panel"><span><i class="asteroid"></i>Астероиды: <b id="asteroid-count">0</b></span><span><i class="craft"></i>Корабли: <b id="craft-count">0</b></span><span id="scale">100%</span><span class="hint">Тянуть — перемещение · Колесо / + − — масштаб · F — вся карта</span></footer>
+  <script type="module" src="app.js"></script>
+</body>
+</html>
