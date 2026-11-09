@@ -469,8 +469,8 @@ function render(now) {
       const velocity = pose.velocity;
       if (velocity && Math.hypot(velocity.x, velocity.y) > 0) ctx.rotate(Math.atan2(velocity.x, velocity.y));
       ctx.moveTo(0, -11); ctx.lineTo(8, 8); ctx.lineTo(0, 4); ctx.lineTo(-8, 8);
-      ctx.fillStyle = isMine(entity) ? '#6edbff' : '#f5d76e';
-      ctx.strokeStyle = isMine(entity) ? '#c1f1ff' : '#fff0b0';
+      ctx.fillStyle = isMine(entity) ? '#6edbff' : ' #f56ef5';
+      ctx.strokeStyle = isMine(entity) ? '#c1f1ff' : '#f7baed';
     } else {
       const seed = Number(entity.id) || 0;
       for (let i = 0; i < 8; i++) {
