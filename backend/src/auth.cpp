@@ -88,8 +88,19 @@ std::string Username(std::string name) {
     return name;
 }
 
-void RequireSession(const Principal& principal) {
-    if (!principal.is_session)
+void RequirePlayer(std::int64_t user_id) {
+    if (user_id <= SERVER_USER_ID)
+        throw ApiError(401, "AUTH_REQUIRED", "Служебный ID не может использоваться аккаунтом игрока.");
+}
+
+void RequirePlayer(const AuthContext& context) {
+    if (!context.principal) throw ApiError(401, "AUTH_REQUIRED", "Войдите в аккаунт.");
+    RequirePlayer(context.principal->user_id);
+}
+
+void RequireSession(const AuthContext& context) {
+    RequirePlayer(context);
+    if (!context.is_session)
         throw ApiError(403, "SESSION_REQUIRED", "Войдите с логином и паролем для управления API-ключами.");
 }
 }
@@ -97,7 +108,7 @@ void RequireSession(const Principal& principal) {
 ApiError::ApiError(int status, std::string code, const std::string& message)
     : std::runtime_error(message), status(status), code(std::move(code)) {}
 
-AuthStore::AuthStore(const std::string& path) {
+AuthStore::AuthStore(const std::string& path, PrincipalRegistry& principals) : principals_(principals) {
     const auto parent = std::filesystem::path(path).parent_path();
     if (!parent.empty()) std::filesystem::create_directories(parent);
     if (sqlite3_open_v2(path.c_str(), &db_, SQLITE_OPEN_READWRITE | SQLITE_OPEN_CREATE | SQLITE_OPEN_FULLMUTEX, nullptr) != SQLITE_OK) {
@@ -111,13 +122,29 @@ AuthStore::AuthStore(const std::string& path) {
         const char* schema =
             "PRAGMA journal_mode=WAL; PRAGMA foreign_keys=ON;"
             "CREATE TABLE IF NOT EXISTS users("
-            "id INTEGER PRIMARY KEY, username TEXT NOT NULL UNIQUE, password_hash TEXT NOT NULL);"
+            "id INTEGER PRIMARY KEY CHECK(id > 0), username TEXT NOT NULL UNIQUE, password_hash TEXT NOT NULL);"
             "CREATE TABLE IF NOT EXISTS credentials("
-            "id INTEGER PRIMARY KEY AUTOINCREMENT, user_id INTEGER NOT NULL REFERENCES users(id),"
+            "id INTEGER PRIMARY KEY AUTOINCREMENT, user_id INTEGER NOT NULL CHECK(user_id > 0) REFERENCES users(id),"
             "digest TEXT NOT NULL UNIQUE, kind TEXT NOT NULL CHECK(kind IN ('session','api')),"
             "name TEXT NOT NULL, prefix TEXT NOT NULL, created_at INTEGER NOT NULL, expires_at INTEGER NOT NULL);"
-            "CREATE INDEX IF NOT EXISTS credentials_user ON credentials(user_id);";
+            "CREATE INDEX IF NOT EXISTS credentials_user ON credentials(user_id);"
+            // CREATE TABLE IF NOT EXISTS does not add CHECKs to existing databases.
+            // AFTER INSERT sees SQLite's allocated rowid, unlike BEFORE INSERT.
+            "CREATE TRIGGER IF NOT EXISTS users_positive_id_insert AFTER INSERT ON users "
+            "WHEN NEW.id <= 0 BEGIN SELECT RAISE(ABORT,'Player user_id must be positive'); END;"
+            "CREATE TRIGGER IF NOT EXISTS users_positive_id_update BEFORE UPDATE ON users "
+            "WHEN NEW.id <= 0 BEGIN SELECT RAISE(ABORT,'Player user_id must be positive'); END;"
+            "CREATE TRIGGER IF NOT EXISTS credentials_positive_user_insert BEFORE INSERT ON credentials "
+            "WHEN NEW.user_id <= 0 BEGIN SELECT RAISE(ABORT,'Credential user_id must be positive'); END;"
+            "CREATE TRIGGER IF NOT EXISTS credentials_positive_user_update BEFORE UPDATE OF user_id ON credentials "
+            "WHEN NEW.user_id <= 0 BEGIN SELECT RAISE(ABORT,'Credential user_id must be positive'); END;";
         Check(sqlite3_exec(db_, schema, nullptr, nullptr, nullptr));
+        Statement reserved(db_, "SELECT id FROM users WHERE id <= 0 LIMIT 1");
+        if (reserved.Next())
+            throw std::runtime_error("Authentication database contains a player with user_id <= 0. "
+                "ID 0 is reserved for the server; migrate this account before startup.");
+        Statement players(db_, "SELECT id,username FROM users");
+        while (players.Next()) principals_.Add(players.Int(0), players.Text(1));
         dummy_password_ = PasswordHash(RandomHex(32), RandomHex(16));
     } catch (...) { sqlite3_close(db_); db_ = nullptr; throw; }
 }
@@ -126,6 +153,7 @@ AuthStore::~AuthStore() { sqlite3_close(db_); }
 
 // Caller holds mutex_. No password derivation runs under this mutex.
 std::string AuthStore::IssueSession(std::int64_t user_id) {
+    RequirePlayer(user_id);
     const auto now = Now();
     Statement cleanup(db_, "DELETE FROM credentials WHERE expires_at<=? OR "
         "(kind='session' AND user_id=? AND id NOT IN "
@@ -151,13 +179,17 @@ std::string AuthStore::Register(const std::string& username, const std::string& 
     existing.Bind(1, name);
     if (existing.Next()) throw ApiError(409, "USERNAME_TAKEN", "Этот логин уже занят.");
     Check(sqlite3_exec(db_, "BEGIN IMMEDIATE", nullptr, nullptr, nullptr));
+    std::int64_t user_id = 0;
+    std::string token;
     try {
         Statement insert(db_, "INSERT INTO users(username,password_hash) VALUES(?,?)");
         insert.Bind(1, name); insert.Bind(2, hash); insert.Next();
-        const auto token = IssueSession(sqlite3_last_insert_rowid(db_));
+        user_id = sqlite3_last_insert_rowid(db_);
+        token = IssueSession(user_id);
         Check(sqlite3_exec(db_, "COMMIT", nullptr, nullptr, nullptr));
-        return token;
     } catch (...) { sqlite3_exec(db_, "ROLLBACK", nullptr, nullptr, nullptr); throw; }
+    principals_.Add(user_id, name);
+    return token;
 }
 
 std::string AuthStore::Login(const std::string& username, const std::string& password) {
@@ -170,46 +202,48 @@ std::string AuthStore::Login(const std::string& username, const std::string& pas
         if (select.Next()) { user_id = select.Int(0); stored = select.Text(1); }
     }
     const bool valid = VerifyPassword(password, stored);
-    if (!valid || !user_id) throw ApiError(401, "INVALID_CREDENTIALS", "Неверный логин или пароль.");
+    if (!valid || user_id <= SERVER_USER_ID) throw ApiError(401, "INVALID_CREDENTIALS", "Неверный логин или пароль.");
     std::lock_guard<std::mutex> lock(mutex_);
     return IssueSession(user_id);
 }
 
-std::optional<Principal> AuthStore::Authenticate(const std::string& token) {
+std::optional<AuthContext> AuthStore::Authenticate(const std::string& token) {
     if (token.empty() || token.size() > 128) return std::nullopt;
     std::lock_guard<std::mutex> lock(mutex_);
-    Statement select(db_, "SELECT user_id,id,kind FROM credentials WHERE digest=? AND expires_at>?");
+    Statement select(db_, "SELECT c.user_id,c.id,c.kind,u.username FROM credentials c "
+        "JOIN users u ON u.id=c.user_id WHERE c.digest=? AND c.expires_at>? AND c.user_id>0");
     select.Bind(1, Digest(token)); select.Bind(2, Now());
     if (!select.Next()) return std::nullopt;
-    return Principal{select.Int(0), select.Int(1), select.Text(2) == "session"};
+    return AuthContext{principals_.Add(select.Int(0), select.Text(3)), select.Int(1), select.Text(2) == "session"};
 }
 
-boost::json::value AuthStore::Profile(const Principal& principal) {
+boost::json::value AuthStore::Profile(const AuthContext& context) {
+    RequirePlayer(context);
     std::lock_guard<std::mutex> lock(mutex_);
     Statement select(db_, "SELECT username FROM users WHERE id=?");
-    select.Bind(1, principal.user_id);
+    select.Bind(1, context.principal->user_id);
     if (!select.Next()) throw ApiError(401, "AUTH_REQUIRED", "Войдите в аккаунт.");
-    return boost::json::object{{"id", principal.user_id}, {"username", select.Text(0)},
-        {"credential", principal.is_session ? "session" : "api_key"}};
+    return boost::json::object{{"id", context.principal->user_id}, {"username", select.Text(0)},
+        {"credential", context.is_session ? "session" : "api_key"}};
 }
 
-void AuthStore::Logout(const Principal& principal) {
-    RequireSession(principal);
+void AuthStore::Logout(const AuthContext& context) {
+    RequireSession(context);
     std::lock_guard<std::mutex> lock(mutex_);
     Statement remove(db_, "DELETE FROM credentials WHERE id=?");
-    remove.Bind(1, principal.credential_id); remove.Next();
+    remove.Bind(1, context.credential_id); remove.Next();
 }
 
-boost::json::value AuthStore::CreateKey(const Principal& principal, const std::string& name,
+boost::json::value AuthStore::CreateKey(const AuthContext& context, const std::string& name,
                                        int days, const std::string& password) {
-    RequireSession(principal);
+    RequireSession(context);
     if (name.empty() || name.size() > 80 || days < 1 || days > 365)
         throw ApiError(400, "INVALID_KEY", "Задайте название ключа и срок от 1 до 365 дней.");
     std::string stored;
     {
         std::lock_guard<std::mutex> lock(mutex_);
         Statement select(db_, "SELECT password_hash FROM users WHERE id=?");
-        select.Bind(1, principal.user_id);
+        select.Bind(1, context.principal->user_id);
         if (!select.Next()) throw ApiError(401, "AUTH_REQUIRED", "Войдите в аккаунт.");
         stored = select.Text(0);
     }
@@ -218,30 +252,30 @@ boost::json::value AuthStore::CreateKey(const Principal& principal, const std::s
     const auto token = "ast_key_" + RandomHex(32);
     std::lock_guard<std::mutex> lock(mutex_);
     Statement count(db_, "SELECT COUNT(*) FROM credentials WHERE user_id=? AND kind='api' AND expires_at>?");
-    count.Bind(1, principal.user_id); count.Bind(2, now); count.Next();
+    count.Bind(1, context.principal->user_id); count.Bind(2, now); count.Next();
     if (count.Int(0) >= 20) throw ApiError(409, "KEY_LIMIT", "Сначала отзовите один из 20 действующих ключей.");
     Statement insert(db_, "INSERT INTO credentials(user_id,digest,kind,name,prefix,created_at,expires_at) VALUES(?,?,'api',?,?,?,?)");
-    insert.Bind(1, principal.user_id); insert.Bind(2, Digest(token)); insert.Bind(3, name);
+    insert.Bind(1, context.principal->user_id); insert.Bind(2, Digest(token)); insert.Bind(3, name);
     insert.Bind(4, token.substr(0, 16)); insert.Bind(5, now); insert.Bind(6, expires); insert.Next();
     return boost::json::object{{"id", sqlite3_last_insert_rowid(db_)}, {"key", token},
         {"name", name}, {"expires_at", expires}, {"scope", "game:read"}};
 }
 
-boost::json::value AuthStore::ListKeys(const Principal& principal) {
-    RequireSession(principal);
+boost::json::value AuthStore::ListKeys(const AuthContext& context) {
+    RequireSession(context);
     std::lock_guard<std::mutex> lock(mutex_);
     Statement select(db_, "SELECT id,name,prefix,created_at,expires_at FROM credentials WHERE user_id=? AND kind='api' ORDER BY id DESC");
-    select.Bind(1, principal.user_id);
+    select.Bind(1, context.principal->user_id);
     boost::json::array result;
     while (select.Next()) result.push_back(boost::json::object{{"id", select.Int(0)}, {"name", select.Text(1)},
         {"prefix", select.Text(2)}, {"created_at", select.Int(3)}, {"expires_at", select.Int(4)}, {"scope", "game:read"}});
     return result;
 }
 
-void AuthStore::RevokeKey(const Principal& principal, std::int64_t id) {
-    RequireSession(principal);
+void AuthStore::RevokeKey(const AuthContext& context, std::int64_t id) {
+    RequireSession(context);
     std::lock_guard<std::mutex> lock(mutex_);
     Statement remove(db_, "DELETE FROM credentials WHERE id=? AND user_id=? AND kind='api'");
-    remove.Bind(1, id); remove.Bind(2, principal.user_id); remove.Next();
+    remove.Bind(1, id); remove.Bind(2, context.principal->user_id); remove.Next();
     if (!sqlite3_changes(db_)) throw ApiError(404, "NOT_FOUND", "Ключ не найден.");
 }

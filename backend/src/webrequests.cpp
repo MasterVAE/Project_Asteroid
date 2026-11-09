@@ -5,12 +5,14 @@
 #include <boost/json/value.hpp>
 
 #include <memory>
+#include <mutex>
 #include <unordered_map>
 #include <utility>
 #include <vector>
 
 #include "world.hpp"
 #include "resources.hpp"
+#include "principal.hpp"
 
 namespace json = boost::json;
 
@@ -22,6 +24,7 @@ json::value GetMap(const World* world)
     for (const auto& entity : world->GetEntities()) {
         json::object entity_obj;
         entity_obj["id"] = entity.first;
+        entity_obj["owner_id"] = entity.second->owner->user_id;
 
         if(entity.second->GetType() == ASTEROID)
         {
@@ -56,6 +59,7 @@ json::value GetEntity(const Entity* entity)
         {
             json::object entity_obj;
             entity_obj["id"] = asteroid->GetId();
+            entity_obj["owner_id"] = asteroid->owner->user_id;
             entity_obj["type"] = "asteroid";
             entity_obj["position"] = { {"x", asteroid->GetPosition().x}, {"y", asteroid->GetPosition().y} };
             entity_obj["velocity"] = { {"x", asteroid->GetVelocity().x}, {"y", asteroid->GetVelocity().y} };
@@ -79,6 +83,7 @@ json::value GetEntity(const Entity* entity)
         {
             json::object entity_obj;
             entity_obj["id"] = craft->GetId();
+            entity_obj["owner_id"] = craft->owner->user_id;
             entity_obj["type"] = "craft";
             entity_obj["position"] = { {"x", craft->GetPosition().x}, {"y", craft->GetPosition().y} };
             entity_obj["velocity"] = { {"x", craft->GetVelocity().x}, {"y", craft->GetVelocity().y} };
@@ -96,4 +101,20 @@ json::value GetEntity(const Entity* entity)
     }
 
     return json::object(); // Return an empty object if the entity is not an asteroid or craft
+}
+
+json::value GetMyEntities(const World* world, const Principal* owner)
+{
+    json::array entities;
+    for (const auto& entry : world->GetEntities()) {
+        if (entry.second->owner == owner) entities.push_back(GetEntity(entry.second));
+    }
+    return json::object{{"entities", std::move(entities)}};
+}
+
+json::value CreateEntity(World* world, const Principal* owner)
+{
+    const auto id = world->CreateEntity(owner);
+    std::lock_guard<std::mutex> lock(world->GetMutex());
+    return GetEntity(world->GetEntities().at(id));
 }

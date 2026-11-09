@@ -10,6 +10,8 @@ const camera = { x: 0, y: 0, zoom: 1 };
 let width = 0, height = 0, entities = [], selected = null;
 let wanted = false, generation = 0, retry = 0;
 let registering = false, authVersion = 0, keyViewVersion = 0;
+let currentUser = null, myEntities = [], fleetRequest = 0, creatingCraft = false;
+const fleetRows = new Map(), pendingEntities = new Map();
 let retryTimer, pollTimer, drag;
 let frame = null, renderedAt = 0;
 
@@ -47,18 +49,25 @@ async function connect() {
 
 async function poll(current) {
   try {
+    const pendingBeforeRequest = new Set(pendingEntities.keys());
     const map = await api.getMap();
     if (current !== generation || !wanted) return;
     entities = map.entities.filter(entity => entity?.position &&
       Number.isFinite(entity.position.x) && Number.isFinite(entity.position.y));
+    const received = new Set(entities.map(entity => entity.id));
+    for (const [id, entity] of pendingEntities) {
+      if (received.has(id) || pendingBeforeRequest.has(id)) pendingEntities.delete(id);
+      else entities.push(entity);
+    }
     interpolation.update(entities, performance.now());
     if (!hasMap) { hasMap = true; fit(); }
     if (selected) selected = entities.find(entity => selected.id !== undefined
       ? entity.id === selected.id
       : entity.type === selected.type && entity.position.x === selected.position.x && entity.position.y === selected.position.y) ?? null;
     if (!selected) $('selection').hidden = true;
-    $('asteroid-count').textContent = entities.filter(entity => entity.type === 'asteroid').length;
-    $('craft-count').textContent = entities.filter(entity => entity.type === 'craft').length;
+    updateCounts();
+    syncFleetSelection();
+    if (!$('fleet').hidden) refreshFleet();
     $('message').textContent = `${entities.length ? 'Нажмите на объект, чтобы посмотреть параметры.' : 'Сервер вернул пустую карту.'} Обновлено: ${new Date().toLocaleTimeString('ru-RU')}`;
     draw();
     pollTimer = setTimeout(() => poll(current), 1000);
@@ -81,6 +90,7 @@ function stop() {
   draw();
   api.disconnect();
   $('disconnect').disabled = true;
+  $('craft-create').disabled = true;
 }
 
 $('register-mode').onclick = () => {
@@ -92,6 +102,7 @@ $('register-mode').onclick = () => {
 };
 
 function showAccount(profile) {
+  currentUser = profile;
   authVersion++;
   keyViewVersion++;
   registering = false;
@@ -102,6 +113,17 @@ function showAccount(profile) {
   $('account').hidden = !profile;
   $('account-name').textContent = profile?.username || '';
   $('disconnect').disabled = !profile;
+  creatingCraft = false;
+  $('craft-create').disabled = !profile;
+  $('craft-create').textContent = 'Создать корабль';
+  myEntities = [];
+  pendingEntities.clear();
+  fleetRows.clear();
+  $('fleet-list').replaceChildren();
+  $('fleet-empty').hidden = true;
+  $('fleet-message').textContent = '';
+  closeFleet();
+  $('fleet-open').textContent = 'Мои корабли (0)';
   $('keys').hidden = true;
   $('key-secret').value = '';
   $('key-password').value = '';
@@ -116,6 +138,7 @@ function clearMap() {
   interpolation.update([], performance.now());
   $('selection').hidden = true;
   $('asteroid-count').textContent = $('craft-count').textContent = '0';
+  updateCounts();
   draw();
 }
 
@@ -202,6 +225,7 @@ async function loadKeys() {
 }
 
 $('keys-open').onclick = async () => {
+  closeFleet();
   const version = authVersion;
   keyViewVersion++;
   $('keys').hidden = false;
@@ -236,6 +260,145 @@ $('key-form').addEventListener('submit', async event => {
   } catch (error) { if (version === authVersion) $('key-message').textContent = error.message; }
   finally { $('key-password').value = ''; $('key-create').disabled = false; }
 });
+
+function isMine(entity) {
+  return currentUser !== null && entity.owner_id === currentUser.id;
+}
+
+function updateCounts() {
+  const ships = entities.filter(entity => entity.type === 'craft');
+  const mine = ships.filter(isMine).length;
+  $('asteroid-count').textContent = entities.filter(entity => entity.type === 'asteroid').length;
+  $('craft-count').textContent = ships.length;
+  $('my-craft-count').textContent = mine;
+  $('other-craft-count').textContent = ships.length - mine;
+  $('fleet-open').textContent = `Мои корабли (${mine})`;
+}
+
+function closeFleet() {
+  fleetRequest++;
+  $('fleet').hidden = true;
+  $('fleet-open').setAttribute('aria-expanded', 'false');
+}
+
+function openFleet() {
+  $('keys-close').onclick();
+  $('fleet').hidden = false;
+  $('fleet-open').setAttribute('aria-expanded', 'true');
+}
+
+function syncFleetSelection() {
+  for (const [id, row] of fleetRows) row.button.setAttribute('aria-pressed', String(selected?.id === id));
+}
+
+function renderFleet() {
+  const ships = myEntities.filter(entity => entity.type === 'craft').sort((a, b) => a.id - b.id);
+  const ids = new Set(ships.map(ship => ship.id));
+  for (const [id, row] of fleetRows) {
+    if (!ids.has(id)) { row.item.remove(); fleetRows.delete(id); }
+  }
+  ships.forEach((ship, index) => {
+    let row = fleetRows.get(ship.id);
+    if (!row) {
+      const item = document.createElement('li');
+      const button = document.createElement('button');
+      button.type = 'button';
+      button.className = 'fleet-ship';
+      const title = document.createElement('strong');
+      title.textContent = `Корабль #${ship.id}`;
+      const position = document.createElement('span');
+      button.append(title, position);
+      button.onclick = () => {
+        focusShip(ship.id);
+        if (innerWidth <= 640) closeFleet();
+      };
+      item.append(button);
+      row = {item, button, position};
+      fleetRows.set(ship.id, row);
+    }
+    row.position.textContent = `X: ${ship.position.x.toFixed(2)} · Y: ${ship.position.y.toFixed(2)}`;
+    const list = $('fleet-list');
+    if (list.children[index] !== row.item) list.insertBefore(row.item, list.children[index] || null);
+  });
+  $('fleet-empty').hidden = ships.length !== 0;
+  $('fleet-message').textContent = ships.length ? `Кораблей: ${ships.length}. Нажмите на корабль, чтобы найти его на карте.` : '';
+  $('fleet-open').textContent = `Мои корабли (${ships.length})`;
+  syncFleetSelection();
+}
+
+async function refreshFleet() {
+  const version = authVersion, request = ++fleetRequest;
+  try {
+    const result = await api.getMyEntities();
+    if (version !== authVersion || request !== fleetRequest || $('fleet').hidden) return;
+    myEntities = result.entities.filter(entity => entity?.position && isMine(entity) &&
+      Number.isFinite(entity.position.x) && Number.isFinite(entity.position.y));
+    renderFleet();
+  } catch (error) {
+    if (version !== authVersion || request !== fleetRequest || $('fleet').hidden) return;
+    if (error.code === 'AUTH_REQUIRED') { expireSession(); return; }
+    $('fleet-message').textContent = error.message;
+  }
+}
+
+function includeEntity(entity) {
+  const existing = entities.find(candidate => candidate.id === entity.id);
+  if (existing) return existing;
+  // An older map response may still be in flight when a ship is created.
+  pendingEntities.set(entity.id, entity);
+  entities.push(entity);
+  updateCounts();
+  return entity;
+}
+
+function focusShip(id) {
+  let entity = entities.find(candidate => candidate.id === id);
+  if (!entity) {
+    const own = myEntities.find(candidate => candidate.id === id);
+    if (!own) return;
+    entity = includeEntity(own);
+  }
+  const pose = interpolation.sample(entity, performance.now());
+  camera.x = pose.position.x;
+  camera.y = pose.position.y;
+  camera.zoom = Math.max(camera.zoom, 1);
+  selectEntity(entity);
+}
+
+$('fleet-open').onclick = () => {
+  if (!$('fleet').hidden) { closeFleet(); return; }
+  openFleet();
+  $('fleet-message').textContent = 'Загрузка…';
+  refreshFleet();
+};
+$('fleet-close').onclick = closeFleet;
+$('craft-create').onclick = async () => {
+  if (!currentUser || !wanted || creatingCraft) return;
+  const version = authVersion;
+  creatingCraft = true;
+  $('craft-create').disabled = true;
+  $('craft-create').textContent = 'Создание…';
+  openFleet();
+  $('fleet-message').textContent = 'Создание корабля…';
+  try {
+    const ship = await api.createCraft();
+    if (version !== authVersion) return;
+    includeEntity(ship);
+    focusShip(ship.id);
+    if (!$('fleet').hidden) await refreshFleet();
+  } catch (error) {
+    if (version !== authVersion) return;
+    if (error.code === 'AUTH_REQUIRED') { expireSession(); return; }
+    $('fleet-message').textContent = error.message;
+    $('message').textContent = error.message;
+  } finally {
+    if (version === authVersion) {
+      creatingCraft = false;
+      $('craft-create').disabled = !wanted;
+      $('craft-create').textContent = 'Создать корабль';
+    }
+  }
+};
 
 
 function project(position) {
@@ -306,7 +469,8 @@ function render(now) {
       const velocity = pose.velocity;
       if (velocity && Math.hypot(velocity.x, velocity.y) > 0) ctx.rotate(Math.atan2(velocity.x, velocity.y));
       ctx.moveTo(0, -11); ctx.lineTo(8, 8); ctx.lineTo(0, 4); ctx.lineTo(-8, 8);
-      ctx.fillStyle = '#6edbff'; ctx.strokeStyle = '#c1f1ff';
+      ctx.fillStyle = isMine(entity) ? '#6edbff' : '#f5d76e';
+      ctx.strokeStyle = isMine(entity) ? '#c1f1ff' : '#fff0b0';
     } else {
       const seed = Number(entity.id) || 0;
       for (let i = 0; i < 8; i++) {
@@ -329,7 +493,12 @@ async function selectAt(x, y) {
     const p = project(interpolation.sample(entity, renderedAt).position), d = Math.hypot(x - p.x, y - p.y);
     if (d < distance) { nearest = entity; distance = d; }
   }
+  await selectEntity(nearest);
+}
+
+async function selectEntity(nearest) {
   selected = nearest;
+  syncFleetSelection();
   draw();
   const panel = $('selection');
   panel.hidden = !nearest;
@@ -343,6 +512,7 @@ async function selectAt(x, y) {
     panel.append(title);
     const lines = [`X: ${entity.position.x.toFixed(2)} · Y: ${entity.position.y.toFixed(2)}`,
       `Скорость: ${Number(entity.velocity?.x ?? 0).toFixed(2)}, ${Number(entity.velocity?.y ?? 0).toFixed(2)}`];
+    if (entity.type === 'craft') lines.push(isMine(entity) ? 'Ваш корабль' : `Чужой корабль · владелец #${entity.owner_id}`);
     if (Array.isArray(entity.resources)) for (const resource of entity.resources) lines.push(`${resource.name}: ${resource.amount}`);
     if (Array.isArray(entity.modules)) lines.push(`Модули: ${entity.modules.map(module => ['Добыча', 'Производство', 'Хранилище'][module.type] ?? module.type).join(', ') || 'нет'}`);
     if (details) lines.push(details);
@@ -410,6 +580,11 @@ function resize() {
   canvas.width = Math.round(width * dpr); canvas.height = Math.round(height * dpr); draw();
 }
 addEventListener('resize', resize);
+const footer = document.querySelector('footer');
+const footerObserver = new ResizeObserver(() => {
+  $('map-controls').style.bottom = `${footer.getBoundingClientRect().height + 28}px`;
+});
+footerObserver.observe(footer);
 resize();
 async function restoreSession() {
   const current = generation;

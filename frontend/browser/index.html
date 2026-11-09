@@ -21,11 +21,19 @@
     </form>
     <div id="account" hidden>
       <span id="account-name"></span>
+      <button id="craft-create" type="button">Создать корабль</button>
+      <button id="fleet-open" type="button" aria-controls="fleet" aria-expanded="false">Мои корабли (0)</button>
       <button id="keys-open" type="button">API-ключи</button>
       <button id="disconnect" type="button">Выйти</button>
     </div>
     <p id="message" role="status">Проверка входа…</p>
   </header>
+  <section id="fleet" class="panel" hidden aria-labelledby="fleet-title">
+    <div class="heading"><h2 id="fleet-title">Мои корабли</h2><button id="fleet-close" type="button">Закрыть</button></div>
+    <p id="fleet-message" role="status">Загрузка…</p>
+    <p id="fleet-empty" hidden>Кораблей пока нет. Нажмите «Создать корабль», чтобы пополнить флот.</p>
+    <ul id="fleet-list" aria-label="Ваши корабли"></ul>
+  </section>
   <section id="keys" class="panel" hidden aria-labelledby="keys-title">
     <div class="heading"><h2 id="keys-title">API-ключи</h2><button id="keys-close" type="button">Закрыть</button></div>
     <p>Отдельные ключи для Python и других клиентов. Выход из сайта не останавливает их работу.</p>
@@ -46,13 +54,13 @@
     <div id="key-list"></div>
   </section>
   <aside id="selection" class="panel" hidden aria-live="polite"></aside>
-  <div class="toolbar panel" aria-label="Управление картой">
+  <div id="map-controls" class="toolbar panel" aria-label="Управление картой">
     <button id="zoom-in" type="button" aria-label="Увеличить">+</button>
     <button id="zoom-out" type="button" aria-label="Уменьшить">−</button>
     <button id="fit" type="button">Вся карта</button>
     <button id="fullscreen" type="button">Полный экран</button>
   </div>
-  <footer class="panel"><span><i class="asteroid"></i>Астероиды: <b id="asteroid-count">0</b></span><span><i class="craft"></i>Корабли: <b id="craft-count">0</b></span><span id="scale">100%</span><span class="hint">Тянуть — перемещение · Колесо / + − — масштаб · F — вся карта</span></footer>
+  <footer class="panel"><span><i class="asteroid"></i>Астероиды: <b id="asteroid-count">0</b></span><span>Корабли: <b id="craft-count">0</b></span><span><i class="craft"></i>Свои: <b id="my-craft-count">0</b></span><span><i class="craft other"></i>Чужие: <b id="other-craft-count">0</b></span><span id="scale">100%</span><span class="hint">Тянуть — перемещение · Колесо / + − — масштаб · F — вся карта</span></footer>
   <script type="module" src="app.js"></script>
 </body>
 </html>

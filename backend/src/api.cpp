@@ -78,32 +78,47 @@ ApiReply ApiService::Handle(const std::string& body, const std::string& credenti
             return reply;
         }
 
-        const auto principal = auth_.Authenticate(credential);
-        if (!principal) throw ApiError(401, "AUTH_REQUIRED", "Войдите в аккаунт.");
-        if (command == "me") return Success(auth_.Profile(*principal));
+        const auto context = auth_.Authenticate(credential);
+        if (!context) throw ApiError(401, "AUTH_REQUIRED", "Войдите в аккаунт.");
+        const Principal* principal = context->principal;
+        if (command == "me") return Success(auth_.Profile(*context));
         if (command == "logout") {
             if (!http) throw ApiError(400, "HTTP_REQUIRED", "Используйте POST /api для выхода.");
-            auth_.Logout(*principal);
+            auth_.Logout(*context);
             auto reply = Success(json::object{{"logged_out", true}});
             reply.clear_session = true;
             return reply;
         }
         if (command == "create_api_key") {
-            if (!principal->is_session) throw ApiError(403, "SESSION_REQUIRED", "Для создания ключей войдите с паролем.");
+            if (!context->is_session) throw ApiError(403, "SESSION_REQUIRED", "Для создания ключей войдите с паролем.");
             LimitAttempt("ip:" + client_ip);
             LimitAttempt("key:" + std::to_string(principal->user_id));
             const auto days = Integer(request, "expires_days");
             if (days < 1 || days > 365) throw ApiError(400, "INVALID_KEY", "Срок ключа: от 1 до 365 дней.");
-            return Success(auth_.CreateKey(*principal, String(request, "name"), static_cast<int>(days), String(request, "password")));
+            return Success(auth_.CreateKey(*context, String(request, "name"), static_cast<int>(days), String(request, "password")));
         }
-        if (command == "list_api_keys") return Success(auth_.ListKeys(*principal));
+        if (command == "list_api_keys") return Success(auth_.ListKeys(*context));
         if (command == "revoke_api_key") {
-            auth_.RevokeKey(*principal, Integer(request, "key_id"));
+            auth_.RevokeKey(*context, Integer(request, "key_id"));
             return Success(json::object{{"revoked", true}});
         }
-        // Both transports enter the same authenticated game dispatcher.
+
+
+/*
+principal->user_id
+
+Вот тут
+*/
+
+        if (command == "create_craft") {
+            if (!context->is_session)
+                throw ApiError(403, "INSUFFICIENT_SCOPE", "Ключ game:read не разрешает создавать корабли.");
+            return Success(CreateEntity(&world_, principal));
+        }
+
         std::lock_guard<std::mutex> lock(world_.GetMutex());
         if (command == "get_map") return Success(GetMap(&world_));
+        if (command == "get_my_entities") return Success(GetMyEntities(&world_, principal));
         if (command == "get_entity") {
             const auto id = Integer(request, "entity_id");
             const auto entities = world_.GetEntities();

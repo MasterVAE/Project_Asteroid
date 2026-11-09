@@ -105,7 +105,7 @@ public:
     unsigned pending_requests = 0;
 
     explicit Server(World& world) : world(&world),
-        auth(std::getenv("ASTEROID_AUTH_DB") ? std::getenv("ASTEROID_AUTH_DB") : "data/auth.sqlite3"),
+        auth(std::getenv("ASTEROID_AUTH_DB") ? std::getenv("ASTEROID_AUTH_DB") : "data/auth.sqlite3", world.GetPrincipals()),
         api(auth, world) {}
 
     void broadcast(const std::string& message);

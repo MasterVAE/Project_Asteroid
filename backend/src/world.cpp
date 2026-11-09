@@ -5,10 +5,12 @@
 #include <memory>
 #include <ostream>
 #include <random>
+#include <stdexcept>
 #include <string>
 #include <unordered_map>
 #include <utility>
 
+#include "principal.hpp"
 #include "resources.hpp"
 
 Vector2 GetRandomPosition(const Vector2& size)
@@ -25,6 +27,9 @@ World* LoadWorld(const std::string& filename = "world.json")
 
     if (!file.is_open()) {
         std::cout << "Не удалось открыть файл!" << std::endl;
+
+        // TODO загрузка мира
+
         return new World(); 
     }
 
@@ -78,13 +83,25 @@ World::World()
     }
     for (int i = 0; i < 10; ++i)
     {
-        Vector2 pos = GetRandomPosition(size);
-
-        Craft* craft = new Craft(pos, Vector2(0.0f, 0.0f), next_entity_id++);
-        craft->AddModule(std::make_unique<MiningModule>(craft));
-        craft->AddModule(std::make_unique<StorageModule>(craft));
-        craft->AddModule(std::make_unique<PropulsionModule>(craft, 1.0f));
-        entities.insert({craft->GetId(), craft});
-        crafts.insert({craft->GetId(), craft});
+        CreateEntity();
     }
+}
+
+std::size_t World::CreateEntity(const Principal* owner)
+{
+    if (!owner || principals_.Find(owner->user_id) != owner)
+        throw std::invalid_argument("Entity owner must belong to this world's principal registry");
+    std::lock_guard<std::mutex> lock(mutex_);
+    const auto id = next_entity_id;
+    auto craft = std::make_unique<Craft>(GetRandomPosition(size), Vector2{}, id);
+    craft->owner = owner;
+    craft->AddModule(std::make_unique<MiningModule>(craft.get()));
+    craft->AddModule(std::make_unique<StorageModule>(craft.get()));
+    craft->AddModule(std::make_unique<PropulsionModule>(craft.get(), 1.0f));
+    entities.emplace(id, craft.get());
+    try { crafts.emplace(id, craft.get()); }
+    catch (...) { entities.erase(id); throw; }
+    ++next_entity_id;
+    craft.release();
+    return id;
 }

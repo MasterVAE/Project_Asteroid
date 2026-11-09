@@ -10,6 +10,7 @@
 #include <vector>
 
 #include "resources.hpp"
+#include "principal.hpp"
 
 class Vector2
 {
@@ -76,14 +77,17 @@ class Entity
     Vector2 velocity;
     ENTITY_TYPE type_;
 
-    std::size_t id_;
+    std::size_t entity_id_;
 
 public:
-    Entity(ENTITY_TYPE type, std::size_t id) : position{0.0f, 0.0f}, velocity{0.0f, 0.0f}, type_(type), id_(id){}
-    Entity(const Vector2& pos, const Vector2& vel, ENTITY_TYPE type, std::size_t id) : position(pos), velocity(vel), type_(type), id_(id) {}
+    // Non-owning canonical identity; player objects are owned by World::principals_.
+    const Principal* owner = Principal::Server();
+
+    Entity(ENTITY_TYPE type, std::size_t entity_id) : position{0.0f, 0.0f}, velocity{0.0f, 0.0f}, type_(type), entity_id_(entity_id){}
+    Entity(const Vector2& pos, const Vector2& vel, ENTITY_TYPE type, std::size_t entity_id) : position(pos), velocity(vel), type_(type), entity_id_(entity_id) {}
 
     Vector2 GetPosition() const { return position; }
-    std::size_t GetId() const { return id_; }
+    std::size_t GetId() const { return entity_id_; }
 
     void SetPosition(const Vector2& pos) { position = pos; }
 
@@ -140,7 +144,7 @@ class Craft;
 class Module
 {
     MODULE_TYPE type_;
-    Craft* parent_craft_; // Указатель на родительский корабль, если необходимо
+    Craft* parent_craft_;
 
 public:
     Module(MODULE_TYPE type, Craft* parent) : type_(type), parent_craft_(parent) {}
@@ -212,6 +216,7 @@ public:
 
 class World
 {
+    PrincipalRegistry principals_;
     mutable std::mutex mutex_;
     std::unordered_map<std::size_t, Entity*> entities;
     std::unordered_map<std::size_t, Entity*> asteroids;
@@ -222,8 +227,11 @@ class World
     std::size_t next_entity_id = 1;
 
 public:
+    PrincipalRegistry& GetPrincipals() { return principals_; }
+    const PrincipalRegistry& GetPrincipals() const { return principals_; }
     std::mutex& GetMutex() const { return mutex_; }
     std::unordered_map<std::size_t, Entity*> GetEntities() const { return entities; }
+    std::size_t CreateEntity(const Principal* owner = Principal::Server());
     World();
     ~World()
     {

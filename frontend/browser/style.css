@@ -27,6 +27,7 @@ footer span { display: inline-flex; align-items: center; gap: 6px; }
 i { display: inline-block; width: 9px; height: 9px; }
 i.asteroid { border-radius: 50%; background: #d7ad77; }
 i.craft { background: #6edbff; clip-path: polygon(50% 0, 100% 100%, 50% 75%, 0 100%); }
+i.craft.other { background: #f56ef5; }
 #selection { left: 16px; top: 182px; padding: 16px; width: 260px; max-height: calc(100dvh - 320px); overflow: auto; }
 #selection h2 { margin: 0 0 10px; font-size: 16px; }
 #selection p { margin: 6px 0; color: #aabdd3; }
@@ -34,8 +35,8 @@ i.craft { background: #6edbff; clip-path: polygon(50% 0, 100% 100%, 50% 75%, 0 1
 #connection { flex-wrap: wrap; }
 #account { display: flex; gap: 10px; align-items: center; flex-wrap: wrap; }
 #account-name { margin-right: auto; overflow-wrap: anywhere; }
-#keys { z-index: 2; top: 16px; right: 16px; width: min(380px, calc(100% - 32px)); max-height: calc(100dvh - 100px); overflow: auto; padding: 16px; }
-#keys h2 { margin: 0; font-size: 17px; }
+#keys, #fleet { z-index: 2; top: 16px; right: 16px; width: min(380px, calc(100% - 32px)); max-height: calc(100dvh - 130px); overflow: auto; padding: 16px; }
+#keys h2, #fleet h2 { margin: 0; font-size: 17px; }
 #keys p { color: #aabdd3; }
 #key-form { display: grid; gap: 7px; }
 #key-form input, #key-secret { width: 100%; }
@@ -43,6 +44,13 @@ i.craft { background: #6edbff; clip-path: polygon(50% 0, 100% 100%, 50% 75%, 0 1
 #key-secret { margin-top: 8px; resize: vertical; overflow-wrap: anywhere; }
 .key-entry { padding: 12px 0; border-top: 1px solid #283b54; overflow-wrap: anywhere; }
 .key-entry p { margin: 4px 0 8px; }
+#fleet-list { list-style: none; padding: 0; margin: 0; }
+#fleet-list li + li { margin-top: 8px; }
+.fleet-ship { width: 100%; display: flex; flex-direction: column; align-items: flex-start; gap: 4px; text-align: left; white-space: normal; }
+.fleet-ship span { font-size: 12px; color: #aabdd3; }
+.fleet-ship[aria-pressed="true"] { border-color: #6edbff; background: #1b3549; }
+#fleet-message, #fleet-empty { color: #aabdd3; }
+#craft-create { background: #256b88; border-color: #378fac; }
 @media (max-width: 640px) {
   header { top: 8px; left: 8px; width: calc(100% - 16px); padding: 12px; }
   form { flex-wrap: wrap; }

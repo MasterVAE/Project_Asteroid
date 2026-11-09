@@ -19,7 +19,7 @@ TARGET = $(BUILD_DIR)/app
 SOURCES = $(wildcard backend/src/*.cpp)
 HEADERS = $(wildcard backend/include/*.h backend/include/*.hpp)
 
-.PHONY: all clean
+.PHONY: all clean test-auth-ids test-principals
 
 all: $(TARGET)
 
@@ -28,6 +28,20 @@ $(TARGET): $(SOURCES) $(HEADERS) Makefile | $(BUILD_DIR)
 
 $(BUILD_DIR):
 	mkdir -p $@
+
+$(BUILD_DIR)/test_auth_ids: tests/auth_ids.cpp backend/src/auth.cpp backend/src/principal.cpp backend/include/auth.hpp backend/include/principal.hpp Makefile | $(BUILD_DIR)
+	$(CXX) $(CPPFLAGS) $(CXXFLAGS) $(LDFLAGS) tests/auth_ids.cpp backend/src/auth.cpp backend/src/principal.cpp $(LDLIBS) -o $@
+
+test-auth-ids: $(BUILD_DIR)/test_auth_ids
+	./$(BUILD_DIR)/test_auth_ids
+
+PRINCIPAL_TEST_SOURCES = tests/principals.cpp backend/src/auth.cpp backend/src/principal.cpp backend/src/world.cpp backend/src/modules.cpp backend/src/api.cpp backend/src/webrequests.cpp
+
+$(BUILD_DIR)/test_principals: $(PRINCIPAL_TEST_SOURCES) $(HEADERS) Makefile | $(BUILD_DIR)
+	$(CXX) $(CPPFLAGS) $(CXXFLAGS) $(LDFLAGS) $(PRINCIPAL_TEST_SOURCES) $(LDLIBS) -o $@
+
+test-principals: $(BUILD_DIR)/test_principals
+	./$(BUILD_DIR)/test_principals
 
 clean:
 	rm -rf $(BUILD_DIR)
