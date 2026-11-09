@@ -55,24 +55,26 @@ void MiningModule::Update(float delta_time)
 
 void PropulsionModule::Update(float delta_time) 
 {
-    // Example propulsion logic: move towards the target position
-    Vector2 current_position = GetParentCraft()->GetPosition(); // Assuming this method exists
-    Vector2 direction = target - current_position;
-    float distance = std::sqrt(direction.x * direction.x + direction.y * direction.y);
-
-    if (distance > 5.0f) {
-        direction.x /= distance;
-        direction.y /= distance;
-
-        // Update velocity based on acceleration and delta_time
-        Vector2 new_velocity = GetParentCraft()->GetVelocity(); // Assuming this method exists
-        new_velocity.x += direction.x * acceleration * delta_time;
-        new_velocity.y += direction.y * acceleration * delta_time;
-
-        GetParentCraft()->SetVelocity(new_velocity); // Assuming this method exists
+    if (!has_target || delta_time <= 0.0f || acceleration <= 0.0f) return;
+    auto* craft = GetParentCraft();
+    const Vector2 offset = target - craft->GetPosition();
+    const float distance = std::hypot(offset.x, offset.y);
+    if (distance <= 0.1f) {
+        craft->SetPosition(target);
+        craft->SetVelocity(Vector2{});
+        has_target = false;
+        if (craft->owner == Principal::Server()) FlyTo(GetRandomPosition(Vector2(1000.0f, 1000.0f)));
+        return;
     }
-    else
-    {
-        FlyTo(GetRandomPosition(Vector2(1000.0f, 1000.0f))); // Fly to a new random position when close enoughß
-    }
+
+    // Limit acceleration and brake as the remaining distance decreases.
+    const float speed = static_cast<float>(std::min(
+        std::sqrt(2.0 * acceleration * distance), static_cast<double>(distance) / delta_time));
+    const Vector2 desired = (offset / distance) * speed;
+    const Vector2 velocity = craft->GetVelocity();
+    Vector2 change = desired - velocity;
+    const float change_length = std::hypot(change.x, change.y);
+    const float max_change = acceleration * delta_time;
+    if (change_length > max_change) change *= max_change / change_length;
+    craft->SetVelocity(velocity + change);
 }

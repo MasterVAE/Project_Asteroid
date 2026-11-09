@@ -9,8 +9,10 @@
 #include <boost/system/error_code.hpp>
 
 #include <cstdint>
+#include <cmath>
 #include <exception>
 #include <iostream>
+#include <limits>
 #include <utility>
 
 namespace json = boost::json;
@@ -26,6 +28,16 @@ std::int64_t Integer(const json::object& object, const char* key) {
     const auto* value = object.if_contains(key);
     if (!value || !value->is_int64()) throw ApiError(400, "INVALID_REQUEST", std::string("Ожидается целое число: ") + key);
     return value->as_int64();
+}
+
+float Coordinate(const json::object& object, const char* key) {
+    const auto* value = object.if_contains(key);
+    if (!value || !value->is_number())
+        throw ApiError(400, "INVALID_REQUEST", std::string("Ожидается координата: ") + key);
+    const double number = value->to_number<double>();
+    if (!std::isfinite(number) || std::abs(number) > std::numeric_limits<float>::max() / 4.0)
+        throw ApiError(400, "INVALID_REQUEST", "Координаты должны быть конечными числами.");
+    return static_cast<float>(number);
 }
 
 ApiReply Success(json::value result) {
@@ -112,11 +124,32 @@ principal->user_id
 
         if (command == "create_craft") {
             if (!context->is_session)
-                throw ApiError(403, "INSUFFICIENT_SCOPE", "Ключ game:read не разрешает создавать корабли.");
+                throw ApiError(403, "INSUFFICIENT_SCOPE", "API-ключ не разрешает создавать корабли.");
             return Success(CreateEntity(&world_, principal));
         }
 
         std::lock_guard<std::mutex> lock(world_.GetMutex());
+        if (command == "fly_to") {
+            const auto id = Integer(request, "entity_id");
+            const Vector2 target{Coordinate(request, "x"), Coordinate(request, "y")};
+            const auto entities = world_.GetEntities();
+            const auto it = id >= 0 ? entities.find(static_cast<std::size_t>(id)) : entities.end();
+            if (it == entities.end()) throw ApiError(404, "NOT_FOUND", "Объект не найден.");
+            auto* entity = it->second;
+            if (entity->owner != principal)
+                throw ApiError(403, "FORBIDDEN", "Можно управлять только своими кораблями.");
+            if (entity->GetType() != CRAFT)
+                throw ApiError(400, "NOT_A_CRAFT", "Объект не является кораблём.");
+            bool propulsion = false;
+            for (const auto& module : static_cast<Craft*>(entity)->GetModules()) {
+                if (module->GetType() == PROPULSION) {
+                    static_cast<PropulsionModule*>(module.get())->FlyTo(target);
+                    propulsion = true;
+                }
+            }
+            if (!propulsion) throw ApiError(400, "NO_PROPULSION", "У корабля нет двигателя.");
+            return Success(GetEntity(entity));
+        }
         if (command == "get_map") return Success(GetMap(&world_));
         if (command == "get_my_entities") return Success(GetMyEntities(&world_, principal));
         if (command == "get_entity") {

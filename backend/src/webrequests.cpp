@@ -92,6 +92,10 @@ json::value GetEntity(const Entity* entity)
             for (const auto& module : craft->GetModules()) {
                 json::object module_obj;
                 module_obj["type"] = module->GetType();
+                if (module->GetType() == PROPULSION) {
+                    const auto& target = static_cast<const PropulsionModule*>(module.get())->GetTarget();
+                    module_obj["target"] = {{"x", target.x}, {"y", target.y}};
+                }
                 modules_array.push_back(module_obj);
             }
             entity_obj["modules"] = modules_array;

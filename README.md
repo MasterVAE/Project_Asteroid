@@ -105,7 +105,7 @@ python3 frontend/python/asteroidAPI.py --username alice
 ```
 
 SDK поддерживают одинаковые методы: `register`, `login`, `me`, `connect`,
-`getMap`, `getMyEntities`, `getEntity`, `createCraft`, `createApiKey`, `listApiKeys`, `revokeApiKey`, `logout`,
+`getMap`, `getMyEntities`, `getEntity`, `createCraft`, `flyTo`, `createApiKey`, `listApiKeys`, `revokeApiKey`, `logout`,
 `disconnect`. В JS они асинхронные, в Python — синхронные. Игровые команды
 обслуживает единый диспетчер, результаты передаются в конверте
 `{"ok":true,"result":...}`, ошибки — `{"ok":false,"error":...}`.

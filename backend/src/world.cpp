@@ -97,7 +97,9 @@ std::size_t World::CreateEntity(const Principal* owner)
     craft->owner = owner;
     craft->AddModule(std::make_unique<MiningModule>(craft.get()));
     craft->AddModule(std::make_unique<StorageModule>(craft.get()));
-    craft->AddModule(std::make_unique<PropulsionModule>(craft.get(), 1.0f));
+    auto propulsion = std::make_unique<PropulsionModule>(craft.get(), 1.0f);
+    if (owner == Principal::Server()) propulsion->FlyTo(GetRandomPosition(size));
+    craft->AddModule(std::move(propulsion));
     entities.emplace(id, craft.get());
     try { crafts.emplace(id, craft.get()); }
     catch (...) { entities.erase(id); throw; }

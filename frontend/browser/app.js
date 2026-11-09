@@ -209,7 +209,7 @@ async function loadKeys() {
     const title = document.createElement('strong');
     title.textContent = key.name;
     const description = document.createElement('p');
-    description.textContent = `${key.prefix}… · до ${new Date(key.expires_at * 1000).toLocaleString('ru-RU')} · чтение карты`;
+    description.textContent = `${key.prefix}… · до ${new Date(key.expires_at * 1000).toLocaleString('ru-RU')} · карта и полёт своих кораблей`;
     const revoke = document.createElement('button');
     revoke.type = 'button';
     revoke.textContent = 'Отозвать';
@@ -514,9 +514,50 @@ async function selectEntity(nearest) {
       `Скорость: ${Number(entity.velocity?.x ?? 0).toFixed(2)}, ${Number(entity.velocity?.y ?? 0).toFixed(2)}`];
     if (entity.type === 'craft') lines.push(isMine(entity) ? 'Ваш корабль' : `Чужой корабль · владелец #${entity.owner_id}`);
     if (Array.isArray(entity.resources)) for (const resource of entity.resources) lines.push(`${resource.name}: ${resource.amount}`);
-    if (Array.isArray(entity.modules)) lines.push(`Модули: ${entity.modules.map(module => ['Добыча', 'Производство', 'Хранилище'][module.type] ?? module.type).join(', ') || 'нет'}`);
+    if (Array.isArray(entity.modules)) lines.push(`Модули: ${entity.modules.map(module => ['Добыча', 'Производство', 'Хранилище', 'Реактор', 'Двигатель'][module.type] ?? module.type).join(', ') || 'нет'}`);
     if (details) lines.push(details);
     for (const line of lines) { const p = document.createElement('p'); p.textContent = line; panel.append(p); }
+    if (entity.type === 'craft' && isMine(entity)) {
+      const form = document.createElement('form');
+      form.className = 'flight-form';
+      const target = entity.modules?.find(module => module.type === 4)?.target ?? entity.position;
+      const inputs = {};
+      for (const axis of ['x', 'y']) {
+        const label = document.createElement('label');
+        label.textContent = axis.toUpperCase();
+        const input = document.createElement('input');
+        input.type = 'number';
+        input.step = 'any';
+        input.required = true;
+        input.value = String(target[axis]);
+        label.append(input);
+        inputs[axis] = input;
+        form.append(label);
+      }
+      const button = document.createElement('button');
+      button.type = 'submit';
+      button.textContent = 'Лететь к координатам';
+      const feedback = document.createElement('p');
+      feedback.setAttribute('role', 'status');
+      form.append(button, feedback);
+      form.addEventListener('submit', async event => {
+        event.preventDefault();
+        if (button.disabled) return;
+        const version = authVersion;
+        button.disabled = true;
+        feedback.textContent = 'Отправка…';
+        try {
+          const x = Number(inputs.x.value), y = Number(inputs.y.value);
+          await api.flyTo(id, x, y);
+          if (version === authVersion) feedback.textContent = `Курс задан: X ${x}, Y ${y}`;
+        } catch (error) {
+          if (version !== authVersion) return;
+          if (error.code === 'AUTH_REQUIRED') { expireSession(); return; }
+          feedback.textContent = error.message;
+        } finally { button.disabled = false; }
+      });
+      panel.append(form);
+    }
   }
   show(nearest);
   if (!api.connected || !Number.isSafeInteger(id)) return;

@@ -115,6 +115,7 @@ export class AsteroidAPI extends EventTarget {
   getMap() { return this.request('get_map'); }
   getMyEntities() { return this.request('get_my_entities'); }
   createCraft() { return this.request('create_craft'); }
+  flyTo(entityId, x, y) { return this.request('fly_to', {entity_id: entityId, x, y}); }
   getEntity(id) {
     if (!Number.isSafeInteger(id) || id < 0) return Promise.reject(new Error('Некорректный ID объекта.'));
     return this.request('get_entity', {entity_id: id});

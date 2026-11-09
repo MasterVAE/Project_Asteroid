@@ -217,6 +217,11 @@ class AsteroidAPI:
     def createCraft(self):
         return self.request("create_craft")
 
+    def flyTo(self, entity_id, x, y):
+        """Send your ship to (x, y); return its state, without waiting for arrival."""
+        return self.request("fly_to", entity_id=entity_id, x=x, y=y)
+
+
 
 def main():
     parser = argparse.ArgumentParser(description="Клиент Project Asteroid")
@@ -232,7 +237,7 @@ def main():
             (api.register if args.register else api.login)(username, password)
         print(json.dumps(api.me(), ensure_ascii=False, indent=2))
         api.connect()
-        print("Команды: map, mine, entity <id>, exit")
+        print("Команды: map, mine, entity <id>, fly <id> <x> <y>, exit")
         while True:
             command = input("> ").split()
             if not command:
@@ -245,8 +250,15 @@ def main():
                 result = api.getMyEntities()
             elif len(command) == 2 and command[0] == "entity" and command[1].isdigit():
                 result = api.getEntity(int(command[1]))
+            elif len(command) == 4 and command[0] == "fly":
+                try:
+                    entity_id, x, y = int(command[1]), float(command[2]), float(command[3])
+                except ValueError:
+                    print("Использование: fly <id> <x> <y>")
+                    continue
+                result = api.flyTo(entity_id, x, y)
             else:
-                print("Команды: map, mine, entity <id>, exit")
+                print("Команды: map, mine, entity <id>, fly <id> <x> <y>, exit")
                 continue
             print(json.dumps(result, ensure_ascii=False, indent=2))
     except (APIError, OSError, websocket.WebSocketException) as error:

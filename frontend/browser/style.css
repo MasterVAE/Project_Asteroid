@@ -31,6 +31,10 @@ i.craft.other { background: #f56ef5; }
 #selection { left: 16px; top: 182px; padding: 16px; width: 260px; max-height: calc(100dvh - 320px); overflow: auto; }
 #selection h2 { margin: 0 0 10px; font-size: 16px; }
 #selection p { margin: 6px 0; color: #aabdd3; }
+.flight-form { display: grid; grid-template-columns: 1fr 1fr; gap: 8px; margin-top: 12px; }
+.flight-form label { min-width: 0; }
+.flight-form input { display: block; width: 100%; margin-top: 4px; }
+.flight-form button, .flight-form p { grid-column: 1 / -1; }
 .sr-only { position: absolute; width: 1px; height: 1px; padding: 0; overflow: hidden; clip: rect(0, 0, 0, 0); }
 #connection { flex-wrap: wrap; }
 #account { display: flex; gap: 10px; align-items: center; flex-wrap: wrap; }

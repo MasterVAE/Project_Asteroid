@@ -185,10 +185,11 @@ class PropulsionModule : public Module
 {
     float acceleration;
     Vector2 target;
+    bool has_target = false;
 public:
     PropulsionModule(Craft* parent, float acceleration) : Module(PROPULSION, parent), acceleration(acceleration) {}
     float GetAcceleration() const { return acceleration; }
-    void FlyTo(const Vector2& target) { this->target = target; }
+    void FlyTo(const Vector2& target) { this->target = target; has_target = true; }
     const Vector2& GetTarget() const { return target; }
     void Update(float delta_time) override;
 };
