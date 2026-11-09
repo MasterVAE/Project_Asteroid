@@ -1,27 +1,73 @@
-// Native browser client for the existing Boost.Beast WebSocket protocol.
+export class APIError extends Error {
+  constructor(error) {
+    super(error.message || 'Ошибка сервера.');
+    this.code = error.code;
+    this.status = error.status;
+  }
+}
+
+// Same commands, results and errors as frontend/python/asteroidAPI.py.
 export class AsteroidAPI extends EventTarget {
   constructor() {
     super();
     this.socket = null;
     this.queue = [];
     this.active = null;
+    this.endpoint = new URL('/api', location.href);
   }
 
   get connected() { return this.socket?.readyState === WebSocket.OPEN; }
 
-  async connect(address) {
-    const url = new URL(address);
+  async httpRequest(requestType, fields = {}) {
+    const controller = new AbortController();
+    const timer = setTimeout(() => controller.abort(), 15000);
+    try {
+      const response = await fetch(this.endpoint, {
+        method: 'POST', credentials: 'same-origin', cache: 'no-store',
+        headers: { 'Content-Type': 'application/json', 'X-Asteroid-Client': '1' },
+        body: JSON.stringify({ ...fields, type: 'request', request_type: requestType }),
+        signal: controller.signal
+      });
+      const body = await response.json();
+      if (!response.ok || !body.ok) throw new APIError(body.error || {status: response.status});
+      return body.result;
+    } finally { clearTimeout(timer); }
+  }
+
+  async authenticate(command, username, password) {
+    const profile = await this.httpRequest(command, {username, password});
+    this.disconnect();
+    return profile;
+  }
+  register(username, password) { return this.authenticate('register', username, password); }
+  login(username, password) { return this.authenticate('login', username, password); }
+  me() { return this.httpRequest('me'); }
+  async logout() {
+    const result = await this.httpRequest('logout');
+    this.disconnect();
+    return result;
+  }
+  createApiKey(name, password, expiresDays = 30) {
+    return this.httpRequest('create_api_key', {name, password, expires_days: expiresDays});
+  }
+  listApiKeys() { return this.httpRequest('list_api_keys'); }
+  revokeApiKey(keyId) { return this.httpRequest('revoke_api_key', {key_id: keyId}); }
+
+  async connect(address = null) {
+    const url = address ? new URL(address) : new URL('/ws', location.href);
+    if (!address) url.protocol = location.protocol === 'https:' ? 'wss:' : 'ws:';
     if (!['ws:', 'wss:'].includes(url.protocol)) throw new Error('Нужен адрес ws:// или wss://.');
-    if (location.protocol === 'https:' && url.protocol !== 'wss:') {
-      throw new Error('Страница HTTPS требует wss://. Настройте TLS-прокси или откройте клиент по HTTP.');
-    }
+    const httpOrigin = new URL(url);
+    httpOrigin.protocol = url.protocol === 'wss:' ? 'https:' : 'http:';
+    if (httpOrigin.origin !== location.origin || url.search || url.hash || url.username || url.password)
+      throw new Error('Откройте сайт игрового сервера для входа и подключения.');
     this.disconnect();
     const socket = new WebSocket(url.href);
     this.socket = socket;
     return new Promise((resolve, reject) => {
       this.rejectConnection = reject;
       this.connectionTimer = setTimeout(() => {
-        reject(new Error('Сервер не ответил за 8 секунд. Проверьте адрес и порт.'));
+        reject(new Error('Сервер не ответил за 8 секунд.'));
         socket.close();
       }, 8000);
       socket.onopen = () => {
@@ -31,25 +77,18 @@ export class AsteroidAPI extends EventTarget {
         resolve();
       };
       socket.onmessage = event => {
-        if (this.socket !== socket || typeof event.data !== 'string') return;
-        // The server sends a plain-text greeting before JSON responses.
-        if (event.data.startsWith('Your ID:')) return;
-        let data;
-        try { data = JSON.parse(event.data); } catch { return; }
+        if (this.socket !== socket || typeof event.data !== 'string' || event.data.startsWith('Your ID:')) return;
+        let body;
+        try { body = JSON.parse(event.data); } catch { return; }
+        if (!this.active || typeof body?.ok !== 'boolean') return;
         const request = this.active;
-        if (!request || !data || typeof data !== 'object') return;
-        const matches = request.body.request_type === 'get_map'
-          ? Array.isArray(data.entities)
-          : typeof data.type === 'string' || Object.keys(data).length === 0;
-        if (!matches) return;
-        clearTimeout(request.timer);
         this.active = null;
-        request.resolve(data);
+        clearTimeout(request.timer);
+        if (body.ok) request.resolve(body.result);
+        else request.reject(new APIError(body.error || {}));
         this.pump();
       };
-      socket.onerror = () => {
-        reject(new Error('Не удалось подключиться. Проверьте адрес, доступность порта и TLS.'));
-      };
+      socket.onerror = () => reject(new Error('Не удалось подключиться к игровому серверу.'));
       socket.onclose = () => {
         if (this.socket !== socket) return;
         clearTimeout(this.connectionTimer);
@@ -73,17 +112,16 @@ export class AsteroidAPI extends EventTarget {
     socket?.close();
   }
 
-  getMap() { return this.request({ type: 'request', request_type: 'get_map' }); }
-
+  getMap() { return this.request('get_map'); }
   getEntity(id) {
     if (!Number.isSafeInteger(id) || id < 0) return Promise.reject(new Error('Некорректный ID объекта.'));
-    return this.request({ type: 'request', request_type: 'get_entity', entity_id: id });
+    return this.request('get_entity', {entity_id: id});
   }
 
-  request(body) {
-    if (!this.connected) return Promise.reject(new Error('Нет подключения к серверу.'));
+  request(requestType, fields = {}) {
+    if (!this.connected) return this.httpRequest(requestType, fields);
     return new Promise((resolve, reject) => {
-      this.queue.push({ body, resolve, reject });
+      this.queue.push({body: {...fields, type: 'request', request_type: requestType}, resolve, reject});
       this.pump();
     });
   }
@@ -91,16 +129,12 @@ export class AsteroidAPI extends EventTarget {
   pump() {
     if (this.active || !this.connected || !this.queue.length) return;
     const request = this.active = this.queue.shift();
-    // Responses have no request IDs, so requests must be serialized.
     request.timer = setTimeout(() => {
       this.failRequests(new Error('Сервер не ответил на запрос за 5 секунд.'));
       this.socket?.close();
     }, 5000);
     try { this.socket.send(JSON.stringify(request.body)); }
-    catch (error) {
-      this.failRequests(error);
-      this.socket?.close();
-    }
+    catch (error) { this.failRequests(error); this.socket?.close(); }
   }
 
   failRequests(error) {

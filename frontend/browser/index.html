@@ -12,13 +12,39 @@
   <header class="panel">
     <div class="heading"><strong>ASTEROID <span>/ карта мира</span></strong><span id="status" role="status">Нет подключения</span></div>
     <form id="connection">
-      <label class="sr-only" for="server">WebSocket-адрес сервера</label>
-      <input id="server" type="url" placeholder="ws://SERVER_IP:8080" required spellcheck="false" aria-label="WebSocket-адрес сервера">
-      <button id="connect" type="submit">Подключиться</button>
-      <button id="disconnect" type="button" disabled>Отключить</button>
+      <label class="sr-only" for="username">Логин</label>
+      <input id="username" name="username" placeholder="Логин" required minlength="3" maxlength="32" pattern="[A-Za-z0-9_-]+" autocomplete="username" spellcheck="false">
+      <label class="sr-only" for="password">Пароль</label>
+      <input id="password" name="password" type="password" placeholder="Пароль (от 12 символов)" required minlength="12" maxlength="1024" autocomplete="current-password">
+      <button id="connect" type="submit">Войти</button>
+      <button id="register-mode" type="button">Создать аккаунт</button>
     </form>
-    <p id="message">Укажите адрес сервера. Карта обновляется раз в секунду.</p>
+    <div id="account" hidden>
+      <span id="account-name"></span>
+      <button id="keys-open" type="button">API-ключи</button>
+      <button id="disconnect" type="button">Выйти</button>
+    </div>
+    <p id="message" role="status">Проверка входа…</p>
   </header>
+  <section id="keys" class="panel" hidden aria-labelledby="keys-title">
+    <div class="heading"><h2 id="keys-title">API-ключи</h2><button id="keys-close" type="button">Закрыть</button></div>
+    <p>Отдельные ключи для Python и других клиентов. Выход из сайта не останавливает их работу.</p>
+    <form id="key-form">
+      <label for="key-name">Название</label>
+      <input id="key-name" placeholder="Мой Python-бот" required maxlength="80">
+      <label for="key-days">Срок действия, дней</label>
+      <input id="key-days" type="number" value="30" min="1" max="365" required>
+      <label for="key-password">Подтвердите пароль</label>
+      <input id="key-password" type="password" autocomplete="current-password" required maxlength="1024">
+      <button id="key-create" type="submit">Создать ключ</button>
+    </form>
+    <p id="key-message" role="status"></p>
+    <div id="key-result" hidden>
+      <label for="key-secret">Скопируйте ключ сейчас: повторно он не показывается.</label>
+      <textarea id="key-secret" readonly rows="3" spellcheck="false"></textarea>
+    </div>
+    <div id="key-list"></div>
+  </section>
   <aside id="selection" class="panel" hidden aria-live="polite"></aside>
   <div class="toolbar panel" aria-label="Управление картой">
     <button id="zoom-in" type="button" aria-label="Увеличить">+</button>

@@ -1,7 +1,11 @@
 CXX = c++
 CXXFLAGS = -std=c++17 -Wall -Wextra -pthread
 CPPFLAGS = -Ibackend/include
-LDLIBS = -lboost_json
+LDLIBS = -lboost_json -lcrypto -lsqlite3
+CRYPTO_CFLAGS := $(shell pkg-config --cflags openssl sqlite3 2>/dev/null)
+CRYPTO_LDFLAGS := $(shell pkg-config --libs-only-L openssl sqlite3 2>/dev/null)
+CPPFLAGS += $(CRYPTO_CFLAGS)
+LDFLAGS += $(CRYPTO_LDFLAGS)
 
 # Поддержка Homebrew на macOS; на Linux переменная останется пустой, если путь не задан вручную
 BOOST_PREFIX ?= $(shell brew --prefix boost 2>/dev/null)

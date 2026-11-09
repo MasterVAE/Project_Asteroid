@@ -1,5 +1,6 @@
 :root { color-scheme: dark; font: 14px/1.5 system-ui, sans-serif; color: #dfebf8; background: #080e19; }
 * { box-sizing: border-box; }
+[hidden] { display: none !important; }
 body { margin: 0; overflow: hidden; }
 #map { display: block; width: 100vw; height: 100vh; height: 100dvh; touch-action: none; cursor: grab; outline-offset: -3px; }
 #map:active { cursor: grabbing; }
@@ -11,7 +12,7 @@ strong { letter-spacing: .1em; }
 strong span { color: #8ba3bf; font-weight: 400; letter-spacing: 0; }
 #status { color: #e1b975; font-size: 12px; }
 #status[data-connected="true"] { color: #6ce3bd; }
-input, button { font: inherit; border: 1px solid #36506e; border-radius: 7px; padding: 8px 10px; color: inherit; background: #17283e; }
+input, button, textarea { font: inherit; border: 1px solid #36506e; border-radius: 7px; padding: 8px 10px; color: inherit; background: #17283e; }
 input { flex: 1; min-width: 0; background: #080e19; }
 button { cursor: pointer; white-space: nowrap; }
 button:hover { background: #233c58; }
@@ -30,6 +31,18 @@ i.craft { background: #6edbff; clip-path: polygon(50% 0, 100% 100%, 50% 75%, 0 1
 #selection h2 { margin: 0 0 10px; font-size: 16px; }
 #selection p { margin: 6px 0; color: #aabdd3; }
 .sr-only { position: absolute; width: 1px; height: 1px; padding: 0; overflow: hidden; clip: rect(0, 0, 0, 0); }
+#connection { flex-wrap: wrap; }
+#account { display: flex; gap: 10px; align-items: center; flex-wrap: wrap; }
+#account-name { margin-right: auto; overflow-wrap: anywhere; }
+#keys { z-index: 2; top: 16px; right: 16px; width: min(380px, calc(100% - 32px)); max-height: calc(100dvh - 100px); overflow: auto; padding: 16px; }
+#keys h2 { margin: 0; font-size: 17px; }
+#keys p { color: #aabdd3; }
+#key-form { display: grid; gap: 7px; }
+#key-form input, #key-secret { width: 100%; }
+#key-result { margin: 12px 0; }
+#key-secret { margin-top: 8px; resize: vertical; overflow-wrap: anywhere; }
+.key-entry { padding: 12px 0; border-top: 1px solid #283b54; overflow-wrap: anywhere; }
+.key-entry p { margin: 4px 0 8px; }
 @media (max-width: 640px) {
   header { top: 8px; left: 8px; width: calc(100% - 16px); padding: 12px; }
   form { flex-wrap: wrap; }

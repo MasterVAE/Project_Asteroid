@@ -1,5 +1,9 @@
 #pragma once
 
+#include <cstddef>
+#include <string>
+#include <unordered_map>
+
 enum RESOURCE_TYPE
 {
     IRON,

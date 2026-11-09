@@ -1,127 +1,176 @@
+"""Unified HTTP/WebSocket API. Importing this module never starts a connection."""
+
+import argparse
+import getpass
+import http.cookiejar
+import json
+import os
+import threading
+import urllib.error
+import urllib.parse
+import urllib.request
 
 import websocket
-import json
-import threading
-import sys
-
-LOCAL_SERVER_URL = "ws://localhost:8080"
-SERVER_URL = "ws://46.173.218.137:8080"
-
-def SendJSONMessage(message):
-    data = {
-        "type": "message",
-        "content": message
-    }
-    return json.dumps(data)
 
 
-def ParseJSON(message):
-    try:
-        return json.loads(message)
-    except (json.JSONDecodeError, TypeError) as e:
-        print(f"JSON parsing error: {e}")
-        return None
+class APIError(Exception):
+    def __init__(self, error):
+        super().__init__(error.get("message", "Ошибка сервера"))
+        self.code = error.get("code")
+        self.status = error.get("status")
 
 
-def PrintJSON(data, indent=0):
-    if isinstance(data, dict):
-        for key, value in data.items():
-            print(" " * indent + f"{key}:")
-            PrintJSON(value, indent + 4)
-
-    elif isinstance(data, list):
-        for i, value in enumerate(data):
-            print(" " * indent + f"[{i}]:")
-            PrintJSON(value, indent + 4)
-
-    else:
-        print(" " * indent + str(data))
-
-def on_open(ws):
-    print("Подключено к серверу!")
+class _NoRedirect(urllib.request.HTTPRedirectHandler):
+    def redirect_request(self, req, fp, code, msg, headers, newurl):
+        return None  # Never forward credentials to another endpoint.
 
 
-def on_message(ws, message):
-    print(f"\nПолучено: ")
-    PrintJSON(ParseJSON(message))
-    print("> ", end="", flush=True)
+class AsteroidAPI:
+    def __init__(self, server="https://46.173.218.137", api_key=None, timeout=15):
+        url = urllib.parse.urlsplit(server)
+        scheme = {"wss": "https", "ws": "http"}.get(url.scheme, url.scheme)
+        if scheme not in ("https", "http") or not url.hostname or url.username or url.password or url.query or url.fragment:
+            raise ValueError("Ожидается HTTPS-адрес игрового сервера")
+        if scheme == "http" and url.hostname not in ("localhost", "127.0.0.1", "::1"):
+            raise ValueError("Для удалённого сервера требуется HTTPS/WSS")
+        if url.path not in ("", "/", "/ws"):
+            raise ValueError("Укажите корневой адрес сервера")
+        self.base = f"{scheme}://{url.netloc}"
+        self.ws_url = f"{'wss' if scheme == 'https' else 'ws'}://{url.netloc}/ws"
+        self.api_key = api_key
+        self.timeout = timeout
+        self.cookies = http.cookiejar.CookieJar()
+        self.opener = urllib.request.build_opener(urllib.request.HTTPCookieProcessor(self.cookies), _NoRedirect())
+        self.socket = None
+        self._lock = threading.Lock()
 
+    @property
+    def connected(self):
+        return self.socket is not None and self.socket.connected
 
-def on_error(ws, error):
-    print(f"\nОшибка: {error}")
-
-
-def on_close(ws, status_code, message):
-    print(f"\nСоединение закрыто: {status_code}, {message}")
-
-
-def send_messages(ws):
-    while True:
+    def httpRequest(self, requestType, **fields):
+        payload = {**fields, "type": "request", "request_type": requestType}
+        headers = {"Content-Type": "application/json", "X-Asteroid-Client": "1"}
+        if self.api_key:
+            headers["Authorization"] = f"Bearer {self.api_key}"
+        request = urllib.request.Request(self.base + "/api", data=json.dumps(payload).encode(), headers=headers, method="POST")
         try:
-            message = input("> ")
+            response = self.opener.open(request, timeout=self.timeout)
+        except urllib.error.HTTPError as error:
+            response = error
+        with response:
+            try:
+                body = json.load(response)
+            except (ValueError, UnicodeDecodeError) as error:
+                raise APIError({"status": response.code, "code": "INVALID_RESPONSE", "message": "Сервер вернул ответ без JSON"}) from error
+            if not body.get("ok"):
+                raise APIError(body.get("error", {"status": response.code}))
+            return body["result"]
 
-            if message.lower() == "exit":
-                ws.close()
+    def register(self, username, password):
+        return self._authenticate("register", username, password)
+
+    def login(self, username, password):
+        return self._authenticate("login", username, password)
+
+    def _authenticate(self, command, username, password):
+        result = self.httpRequest(command, username=username, password=password)
+        self.disconnect()
+        self.api_key = None
+        return result
+
+    def me(self):
+        return self.httpRequest("me")
+
+    def logout(self):
+        result = self.httpRequest("logout")
+        self.disconnect()
+        return result
+
+    def createApiKey(self, name, password, expiresDays=30):
+        return self.httpRequest("create_api_key", name=name, password=password, expires_days=expiresDays)
+
+    def listApiKeys(self):
+        return self.httpRequest("list_api_keys")
+
+    def revokeApiKey(self, keyId):
+        return self.httpRequest("revoke_api_key", key_id=keyId)
+
+    def connect(self):
+        self.disconnect()
+        headers = [f"Authorization: Bearer {self.api_key}"] if self.api_key else []
+        request = urllib.request.Request(self.base + "/ws")
+        self.cookies.add_cookie_header(request)
+        self.socket = websocket.create_connection(self.ws_url, header=headers,
+            cookie=request.get_header("Cookie"), timeout=self.timeout, suppress_origin=True, redirect_limit=0)
+
+    def disconnect(self):
+        with self._lock:
+            if self.socket is not None:
+                self.socket.close()
+                self.socket = None
+
+    def request(self, requestType, **fields):
+        if not self.connected:
+            return self.httpRequest(requestType, **fields)
+        with self._lock:
+            self.socket.send(json.dumps({**fields, "type": "request", "request_type": requestType}))
+            while True:
+                message = self.socket.recv()
+                if isinstance(message, str) and message.startswith("Your ID:"):
+                    continue
+                if not message:
+                    raise APIError({"code": "DISCONNECTED", "message": "Соединение закрыто"})
+                body = json.loads(message)
+                if not body.get("ok"):
+                    raise APIError(body.get("error", {}))
+                return body["result"]
+
+    def getMap(self):
+        return self.request("get_map")
+
+    def getEntity(self, entity_id):
+        if not isinstance(entity_id, int) or isinstance(entity_id, bool) or entity_id < 0:
+            raise ValueError("Некорректный ID объекта")
+        return self.request("get_entity", entity_id=entity_id)
+
+
+def main():
+    parser = argparse.ArgumentParser(description="Клиент Project Asteroid")
+    parser.add_argument("--server", default="https://46.173.218.137")
+    parser.add_argument("--username")
+    parser.add_argument("--register", action="store_true")
+    args = parser.parse_args()
+    api = AsteroidAPI(args.server, api_key=os.environ.get("ASTEROID_API_KEY"))
+    try:
+        if not api.api_key:
+            username = args.username or input("Логин: ")
+            password = getpass.getpass("Пароль: ")
+            (api.register if args.register else api.login)(username, password)
+        print(json.dumps(api.me(), ensure_ascii=False, indent=2))
+        api.connect()
+        print("Команды: map, entity <id>, exit")
+        while True:
+            command = input("> ").split()
+            if not command:
+                continue
+            if command == ["exit"]:
                 break
-
-            if message.lower() == "map":
-                request = {
-                    "type": "request",
-                    "request_type": "get_map"
-                }
-                ws.send(json.dumps(request))
-                continue
-            if message.lower().startswith("entity"):
-                parts = message.split()
-                if len(parts) == 2 and parts[1].isdigit():
-                    entity_id = int(parts[1])
-                    request = {
-                        "type": "request",
-                        "request_type": "get_entity",
-                        "entity_id": entity_id
-                    }
-                    ws.send(json.dumps(request))
-                else:
-                    print("Использование: entity <id>")
-                continue
-
-            if ws.sock and ws.sock.connected:
-                ws.send(SendJSONMessage(message))
+            if command == ["map"]:
+                result = api.getMap()
+            elif len(command) == 2 and command[0] == "entity" and command[1].isdigit():
+                result = api.getEntity(int(command[1]))
             else:
-                print("Нет соединения с сервером")
-                break
+                print("Команды: map, entity <id>, exit")
+                continue
+            print(json.dumps(result, ensure_ascii=False, indent=2))
+    except (APIError, OSError, websocket.WebSocketException) as error:
+        print(str(error))
+    except (EOFError, KeyboardInterrupt):
+        pass
+    finally:
+        api.disconnect()
 
-        except (EOFError, KeyboardInterrupt):
-            ws.close()
-            break
-        except websocket.WebSocketConnectionClosedException:
-            print("Соединение потеряно")
-            break
 
-def SendJSONMessage(message):
-    data = {
-        "type": "message",
-        "content": message
-    }
-    return json.dumps(data)
-
-if(sys.argv[1] == "local"):
-    SERVER_URL = LOCAL_SERVER_URL
-
-ws = websocket.WebSocketApp(
-    SERVER_URL,
-    on_open=on_open,
-    on_message=on_message,
-    on_error=on_error,
-    on_close=on_close,
-)
-
-# Приём сообщений в отдельном потоке
-thread = threading.Thread(
-    target=ws.run_forever,
-    daemon=True
-)
-thread.start()
-
-# Отправка сообщений из основного потока
-send_messages(ws)
+if __name__ == "__main__":
+    main()

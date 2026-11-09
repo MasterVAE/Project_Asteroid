@@ -144,6 +144,7 @@ class Module
 
 public:
     Module(MODULE_TYPE type, Craft* parent) : type_(type), parent_craft_(parent) {}
+    virtual ~Module() = default;
     MODULE_TYPE GetType() const { return type_; }
     virtual void Update(float delta_time) = 0; // Чисто виртуальная функция для обновления модуля
     Craft* GetParentCraft() const { return parent_craft_; }

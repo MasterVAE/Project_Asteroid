@@ -8,7 +8,8 @@ const canvas = $('map');
 const ctx = canvas.getContext('2d');
 const camera = { x: 0, y: 0, zoom: 1 };
 let width = 0, height = 0, entities = [], selected = null;
-let wanted = false, endpoint = '', generation = 0, retry = 0;
+let wanted = false, generation = 0, retry = 0;
+let registering = false, authVersion = 0, keyViewVersion = 0;
 let retryTimer, pollTimer, drag;
 let frame = null, renderedAt = 0;
 
@@ -32,7 +33,7 @@ async function connect() {
   const current = ++generation;
   status('Подключение…');
   try {
-    await api.connect(endpoint);
+    await api.connect();
     if (current !== generation || !wanted) return;
     retry = 0;
     status('Подключено', true);
@@ -40,12 +41,7 @@ async function connect() {
   } catch (error) {
     if (current !== generation || !wanted) return;
     $('message').textContent = error.message;
-    // Invalid URLs and mixed content require the user to edit the address.
-    if (!api.socket && !retryTimer) {
-      wanted = false;
-      status('Ошибка подключения');
-      $('disconnect').disabled = true;
-    } else retryConnection();
+    checkConnection();
   }
 }
 
@@ -68,6 +64,7 @@ async function poll(current) {
     pollTimer = setTimeout(() => poll(current), 1000);
   } catch (error) {
     if (current !== generation || !wanted) return;
+    if (error.code === 'AUTH_REQUIRED') { expireSession(); return; }
     $('message').textContent = error.message;
     retryConnection();
   }
@@ -86,24 +83,160 @@ function stop() {
   $('disconnect').disabled = true;
 }
 
-$('connection').addEventListener('submit', event => {
+$('register-mode').onclick = () => {
+  registering = !registering;
+  $('connect').textContent = registering ? 'Зарегистрироваться' : 'Войти';
+  $('register-mode').textContent = registering ? 'Уже есть аккаунт' : 'Создать аккаунт';
+  $('password').autocomplete = registering ? 'new-password' : 'current-password';
+  $('message').textContent = registering ? 'Логин: латинские буквы, цифры, _ и -. Пароль: от 12 символов.' : 'Введите логин и пароль.';
+};
+
+function showAccount(profile) {
+  authVersion++;
+  keyViewVersion++;
+  registering = false;
+  $('connect').textContent = 'Войти';
+  $('register-mode').textContent = 'Создать аккаунт';
+  $('password').autocomplete = 'current-password';
+  $('connection').hidden = !!profile;
+  $('account').hidden = !profile;
+  $('account-name').textContent = profile?.username || '';
+  $('disconnect').disabled = !profile;
+  $('keys').hidden = true;
+  $('key-secret').value = '';
+  $('key-password').value = '';
+  $('key-result').hidden = true;
+  $('key-list').replaceChildren();
+}
+
+function clearMap() {
+  entities = [];
+  selected = null;
+  hasMap = false;
+  interpolation.update([], performance.now());
+  $('selection').hidden = true;
+  $('asteroid-count').textContent = $('craft-count').textContent = '0';
+  draw();
+}
+
+function expireSession() {
+  stop();
+  showAccount(null);
+  clearMap();
+  status('Войдите в аккаунт');
+  $('message').textContent = 'Сессия завершена. Войдите снова.';
+}
+
+async function checkConnection() {
+  const current = generation;
+  if (!wanted) return;
+  try { await api.me(); }
+  catch (error) {
+    if (current !== generation || !wanted) return;
+    if (error.code === 'AUTH_REQUIRED') { expireSession(); return; }
+  }
+  if (current === generation && wanted) retryConnection();
+}
+
+$('connection').addEventListener('submit', async event => {
   event.preventDefault();
   stop();
-  endpoint = $('server').value.trim();
-  wanted = true;
-  retry = 0;
-  hasMap = false;
-  selected = null;
-  $('selection').hidden = true;
-  $('disconnect').disabled = false;
-  connect();
+  const current = generation;
+  $('connect').disabled = $('register-mode').disabled = true;
+  status(registering ? 'Регистрация…' : 'Вход…');
+  try {
+    const profile = await api[registering ? 'register' : 'login']($('username').value.trim(), $('password').value);
+    if (current !== generation) return;
+    $('password').value = '';
+    showAccount(profile);
+    clearMap();
+    wanted = true;
+    retry = 0;
+    connect();
+  } catch (error) {
+    if (current !== generation) return;
+    status('Ошибка входа');
+    $('message').textContent = error.message;
+  } finally { $('connect').disabled = $('register-mode').disabled = false; }
 });
-$('disconnect').onclick = () => {
+$('disconnect').onclick = async () => {
   stop();
-  status('Отключено');
-  $('message').textContent = 'Показана последняя полученная карта.';
+  try {
+    await api.logout();
+    showAccount(null);
+    clearMap();
+    status('Вы вышли');
+    $('message').textContent = 'Введите логин и пароль для входа.';
+  } catch (error) {
+    if (error.code === 'AUTH_REQUIRED') { expireSession(); return; }
+    $('disconnect').disabled = false;
+    $('message').textContent = `Выход не завершён: ${error.message}`;
+  }
 };
-api.addEventListener('close', retryConnection);
+api.addEventListener('close', checkConnection);
+
+async function loadKeys() {
+  const version = authVersion;
+  const keys = await api.listApiKeys();
+  if (version !== authVersion) return;
+  $('key-list').replaceChildren();
+  for (const key of keys) {
+    const entry = document.createElement('div');
+    entry.className = 'key-entry';
+    const title = document.createElement('strong');
+    title.textContent = key.name;
+    const description = document.createElement('p');
+    description.textContent = `${key.prefix}… · до ${new Date(key.expires_at * 1000).toLocaleString('ru-RU')} · чтение карты`;
+    const revoke = document.createElement('button');
+    revoke.type = 'button';
+    revoke.textContent = 'Отозвать';
+    revoke.onclick = async () => {
+      revoke.disabled = true;
+      try { await api.revokeApiKey(key.id); if (version === authVersion) await loadKeys(); }
+      catch (error) { if (version === authVersion) { $('key-message').textContent = error.message; revoke.disabled = false; } }
+    };
+    entry.append(title, description, revoke);
+    $('key-list').append(entry);
+  }
+  if (!keys.length) $('key-list').textContent = 'API-ключей пока нет.';
+}
+
+$('keys-open').onclick = async () => {
+  const version = authVersion;
+  keyViewVersion++;
+  $('keys').hidden = false;
+  $('key-message').textContent = '';
+  try { await loadKeys(); }
+  catch (error) {
+    if (version !== authVersion) return;
+    if (error.code === 'AUTH_REQUIRED') expireSession(); else $('key-message').textContent = error.message;
+  }
+};
+$('keys-close').onclick = () => {
+  keyViewVersion++;
+  $('keys').hidden = true;
+  $('key-secret').value = '';
+  $('key-password').value = '';
+  $('key-result').hidden = true;
+};
+$('key-form').addEventListener('submit', async event => {
+  event.preventDefault();
+  const version = authVersion;
+  const view = keyViewVersion;
+  $('key-create').disabled = true;
+  $('key-secret').value = '';
+  $('key-result').hidden = true;
+  try {
+    const key = await api.createApiKey($('key-name').value.trim(), $('key-password').value, Number($('key-days').value));
+    if (version !== authVersion || view !== keyViewVersion) return;
+    $('key-secret').value = key.key;
+    $('key-result').hidden = false;
+    $('key-message').textContent = 'Ключ создан. Храните его как пароль.';
+    await loadKeys();
+  } catch (error) { if (version === authVersion) $('key-message').textContent = error.message; }
+  finally { $('key-password').value = ''; $('key-create').disabled = false; }
+});
+
 
 function project(position) {
   return { x: width / 2 + (position.x - camera.x) * camera.zoom,
@@ -278,8 +411,18 @@ function resize() {
 }
 addEventListener('resize', resize);
 resize();
-const query = new URLSearchParams(location.search).get('server');
-const defaultServer = new URL('/ws', location.href);
-defaultServer.protocol = location.protocol === 'https:' ? 'wss:' : 'ws:';
-$('server').value = query || defaultServer.href;
-$('connection').requestSubmit();
+async function restoreSession() {
+  const current = generation;
+  try {
+    const profile = await api.me();
+    if (current !== generation) return;
+    showAccount(profile);
+    wanted = true;
+    connect();
+  } catch (error) {
+    if (current !== generation) return;
+    status('Войдите в аккаунт');
+    $('message').textContent = error.code === 'AUTH_REQUIRED' ? 'Войдите или создайте аккаунт.' : error.message;
+  }
+}
+restoreSession();
