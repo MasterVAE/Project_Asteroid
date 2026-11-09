@@ -27,6 +27,7 @@
 #include <boost/json/string.hpp>
 #include <boost/json/value.hpp>
 #include <boost/system/error_code.hpp>
+#include <boost/asio/ip/address_v4.hpp>
 
 #include <cstddef>
 #include <cstdint>
@@ -333,7 +334,8 @@ void LaunchWebServer(World* world, const std::string& web_root)
         }
 
         tcp::acceptor acceptor(
-            io, tcp::endpoint(tcp::v4(), 8080)
+            io,
+            tcp::endpoint(net::ip::address_v4::loopback(), 8080)
         );
 
         std::function<void()> accept_next;

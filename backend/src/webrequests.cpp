@@ -10,6 +10,7 @@
 #include <vector>
 
 #include "world.hpp"
+#include "resources.hpp"
 
 namespace json = boost::json;
 
@@ -62,7 +63,7 @@ json::value GetEntity(const Entity* entity)
             json::array resources_array;
             for (const auto& resource : asteroid->GetInventory()) {
                 json::object resource_obj;
-                resource_obj["name"] = resource.first;
+                resource_obj["name"] = RESOURCE_DATA.at(resource.first).name;
                 resource_obj["amount"] = resource.second;
                 resources_array.push_back(resource_obj);
             }
