@@ -8,6 +8,7 @@
 #include <stdexcept>
 #include <string>
 #include <unordered_map>
+#include <unordered_set>
 #include <utility>
 
 #include "principal.hpp"
@@ -53,6 +54,30 @@ void UpdateWorld(World* world, float delta_time)
         pos.y += vel.y * delta_time;
 
         entity->SetPosition(pos);
+    }
+    world->RemoveDepletedAsteroids();
+}
+
+void World::RemoveDepletedAsteroids()
+{
+    std::unordered_set<Asteroid*> depleted;
+    for (const auto& entry : asteroids) {
+        auto* asteroid = static_cast<Asteroid*>(entry.second);
+        if (asteroid->GetInventory().empty()) depleted.insert(asteroid);
+    }
+    if (depleted.empty()) return;
+    for (const auto& entry : crafts) {
+        for (const auto& module : static_cast<Craft*>(entry.second)->GetModules()) {
+            if (module->GetType() == MINING) {
+                auto* mining = static_cast<MiningModule*>(module.get());
+                if (depleted.count(mining->GetTargetAsteroid())) mining->StopMining();
+            }
+        }
+    }
+    for (auto* asteroid : depleted) {
+        entities.erase(asteroid->GetId());
+        asteroids.erase(asteroid->GetId());
+        delete asteroid;
     }
 }
 

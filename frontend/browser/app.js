@@ -65,6 +65,7 @@ async function poll(current) {
       ? entity.id === selected.id
       : entity.type === selected.type && entity.position.x === selected.position.x && entity.position.y === selected.position.y) ?? null;
     if (!selected) $('selection').hidden = true;
+    if (selected?.type === 'craft' && isMine(selected)) refreshSelectedCargo();
     updateCounts();
     syncFleetSelection();
     if (!$('fleet').hidden) refreshFleet();
@@ -209,7 +210,7 @@ async function loadKeys() {
     const title = document.createElement('strong');
     title.textContent = key.name;
     const description = document.createElement('p');
-    description.textContent = `${key.prefix}… · до ${new Date(key.expires_at * 1000).toLocaleString('ru-RU')} · карта, создание и полёт своих кораблей`;
+    description.textContent = `${key.prefix}… · до ${new Date(key.expires_at * 1000).toLocaleString('ru-RU')} · карта, создание, полёт и добыча своими кораблями`;
     const revoke = document.createElement('button');
     revoke.type = 'button';
     revoke.textContent = 'Отозвать';
@@ -496,6 +497,73 @@ async function selectAt(x, y) {
   await selectEntity(nearest);
 }
 
+function updateShipCargo(entity) {
+  if (selected?.id !== entity.id) return;
+  const cargo = $('ship-cargo'), state = $('mining-state');
+  if (!cargo || !state) return;
+  const resources = (entity.modules ?? []).flatMap(module => module.resources ?? []);
+  cargo.textContent = resources.length ? `Хранилище: ${resources.map(resource => `${resource.name}: ${Number(resource.amount).toFixed(2)}`).join(', ')}` : 'Хранилище пусто';
+  const asteroid = entity.modules?.find(module => module.type === 0)?.asteroid_id;
+  state.textContent = asteroid == null ? 'Добыча не назначена' : `Цель добычи: астероид #${asteroid}`;
+}
+
+async function refreshSelectedCargo() {
+  const id = selected.id, current = generation;
+  try {
+    const entity = await api.getEntity(id);
+    if (current === generation && selected?.id === id) updateShipCargo(entity);
+  } catch (error) {
+    if (current === generation && error.code === 'AUTH_REQUIRED') expireSession();
+  }
+}
+
+function appendMiningForm(panel, entity) {
+  const state = document.createElement('p');
+  state.id = 'mining-state';
+  const cargo = document.createElement('p');
+  cargo.id = 'ship-cargo';
+  panel.append(state, cargo);
+  updateShipCargo(entity);
+  const form = document.createElement('form');
+  form.className = 'mining-form';
+  const label = document.createElement('label');
+  label.textContent = 'Астероид для добычи';
+  const select = document.createElement('select');
+  select.required = true;
+  for (const asteroid of entities.filter(candidate => candidate.type === 'asteroid')) {
+    const option = document.createElement('option');
+    option.value = String(asteroid.id);
+    option.textContent = `#${asteroid.id} · X ${asteroid.position.x.toFixed(1)}, Y ${asteroid.position.y.toFixed(1)}`;
+    select.append(option);
+  }
+  label.append(select);
+  const button = document.createElement('button');
+  button.type = 'submit';
+  button.textContent = 'Добывать';
+  button.disabled = !select.options.length;
+  const feedback = document.createElement('p');
+  feedback.setAttribute('role', 'status');
+  form.append(label, button, feedback);
+  form.addEventListener('submit', async event => {
+    event.preventDefault();
+    if (button.disabled) return;
+    const version = authVersion;
+    button.disabled = true;
+    feedback.textContent = 'Отправка…';
+    try {
+      const ship = await api.mine(entity.id, Number(select.value));
+      if (version !== authVersion) return;
+      if (selected?.id === entity.id) updateShipCargo(ship);
+      feedback.textContent = 'Корабль направлен к астероиду. Добыча начнётся ближе 20 единиц.';
+    } catch (error) {
+      if (version !== authVersion) return;
+      if (error.code === 'AUTH_REQUIRED') { expireSession(); return; }
+      feedback.textContent = error.message;
+    } finally { button.disabled = !select.options.length; }
+  });
+  panel.append(form);
+}
+
 async function selectEntity(nearest) {
   selected = nearest;
   syncFleetSelection();
@@ -548,7 +616,8 @@ async function selectEntity(nearest) {
         feedback.textContent = 'Отправка…';
         try {
           const x = Number(inputs.x.value), y = Number(inputs.y.value);
-          await api.flyTo(id, x, y);
+          const ship = await api.flyTo(id, x, y);
+          if (version === authVersion) updateShipCargo(ship);
           if (version === authVersion) feedback.textContent = `Курс задан: X ${x}, Y ${y}`;
         } catch (error) {
           if (version !== authVersion) return;
@@ -557,6 +626,7 @@ async function selectEntity(nearest) {
         } finally { button.disabled = false; }
       });
       panel.append(form);
+      appendMiningForm(panel, entity);
     }
   }
   show(nearest);

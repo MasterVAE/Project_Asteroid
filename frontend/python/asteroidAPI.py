@@ -221,6 +221,10 @@ class AsteroidAPI:
         """Send your ship to (x, y); return its state, without waiting for arrival."""
         return self.request("fly_to", entity_id=entity_id, x=x, y=y)
 
+    def mine(self, craft_id, asteroid_id):
+        """Approach an asteroid and mine into your ship's storage; return immediately."""
+        return self.request("mine", craft_id=craft_id, asteroid_id=asteroid_id)
+
 
 
 def main():
@@ -237,7 +241,7 @@ def main():
             (api.register if args.register else api.login)(username, password)
         print(json.dumps(api.me(), ensure_ascii=False, indent=2))
         api.connect()
-        print("Команды: map, mine, entity <id>, fly <id> <x> <y>, exit")
+        print("Команды: map, mine, mine <craft_id> <asteroid_id>, entity <id>, fly <id> <x> <y>, exit")
         while True:
             command = input("> ").split()
             if not command:
@@ -248,6 +252,13 @@ def main():
                 result = api.getMap()
             elif command == ["mine"]:
                 result = api.getMyEntities()
+            elif len(command) == 3 and command[0] == "mine":
+                try:
+                    craft_id, asteroid_id = int(command[1]), int(command[2])
+                except ValueError:
+                    print("Использование: mine <craft_id> <asteroid_id>")
+                    continue
+                result = api.mine(craft_id, asteroid_id)
             elif len(command) == 2 and command[0] == "entity" and command[1].isdigit():
                 result = api.getEntity(int(command[1]))
             elif len(command) == 4 and command[0] == "fly":
@@ -258,7 +269,7 @@ def main():
                     continue
                 result = api.flyTo(entity_id, x, y)
             else:
-                print("Команды: map, mine, entity <id>, fly <id> <x> <y>, exit")
+                print("Команды: map, mine, mine <craft_id> <asteroid_id>, entity <id>, fly <id> <x> <y>, exit")
                 continue
             print(json.dumps(result, ensure_ascii=False, indent=2))
     except (APIError, OSError, websocket.WebSocketException) as error:

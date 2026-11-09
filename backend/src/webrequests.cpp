@@ -96,6 +96,17 @@ json::value GetEntity(const Entity* entity)
                     const auto& target = static_cast<const PropulsionModule*>(module.get())->GetTarget();
                     module_obj["target"] = {{"x", target.x}, {"y", target.y}};
                 }
+                if (module->GetType() == MINING) {
+                    const auto* target = static_cast<const MiningModule*>(module.get())->GetTargetAsteroid();
+                    if (target) module_obj["asteroid_id"] = target->GetId();
+                    else module_obj["asteroid_id"] = nullptr;
+                }
+                if (module->GetType() == STORAGE) {
+                    json::array resources;
+                    for (const auto& resource : static_cast<const StorageModule*>(module.get())->GetInventory())
+                        resources.push_back(json::object{{"name", RESOURCE_DATA.at(resource.first).name}, {"amount", resource.second}});
+                    module_obj["resources"] = std::move(resources);
+                }
                 modules_array.push_back(module_obj);
             }
             entity_obj["modules"] = modules_array;

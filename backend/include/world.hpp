@@ -172,12 +172,16 @@ class MiningModule : public Module
 {
     Asteroid* target_asteroid = nullptr;
     StorageModule* storage_module = nullptr;
+    double mining_credit = 0.0;
 public:
     MiningModule(Craft* parent) : Module(MINING, parent) {};
     void MineResource(Asteroid* asteroid, StorageModule* storage) {
         target_asteroid = asteroid;
         storage_module = storage;
+        mining_credit = 0.0;
     };
+    Asteroid* GetTargetAsteroid() const { return target_asteroid; }
+    void StopMining() { MineResource(nullptr, nullptr); }
     void Update(float delta_time) override;
 };
 
@@ -233,6 +237,8 @@ public:
     std::mutex& GetMutex() const { return mutex_; }
     std::unordered_map<std::size_t, Entity*> GetEntities() const { return entities; }
     std::size_t CreateEntity(const Principal* owner = Principal::Server());
+    // Called under the world mutex, after all entities have updated.
+    void RemoveDepletedAsteroids();
     World();
     ~World()
     {

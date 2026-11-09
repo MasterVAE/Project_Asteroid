@@ -35,21 +35,19 @@ void StorageModule::Update(float delta_time) {}
 
 void MiningModule::Update(float delta_time) 
 {
-    if(target_asteroid && storage_module)
-    {
-        // Example mining logic: mine 1 unit of resource per second
-        float mining_rate = 1.0f; // units per second
-        float amount_mined = mining_rate * delta_time;
+    if (!target_asteroid || !storage_module || delta_time <= 0.0f) return;
+    if ((target_asteroid->GetPosition() - GetParentCraft()->GetPosition()).Magnitude() >= 20.0f) return;
 
-        // Assuming the asteroid has a method to get and remove resources
-        for (const auto& resource : target_asteroid->GetInventory()) {
-            if (resource.second > 0) {
-                float mined_amount = std::min(amount_mined, resource.second);
-                storage_module->AddResource(resource.first, mined_amount);
-                target_asteroid->TakeResource(resource.first, mined_amount);
-                break; // Mine one type of resource at a time
-            }
-        }
+    // Batch tiny simulation steps so float inventories actually change at full tick speed.
+    mining_credit += delta_time; // One resource unit per second.
+    if (mining_credit < 0.01) return;
+    while (mining_credit > 0.0 && !target_asteroid->GetInventory().empty()) {
+        const auto resource = *target_asteroid->GetInventory().begin();
+        const float amount = static_cast<float>(std::min(mining_credit, static_cast<double>(resource.second)));
+        if (amount <= 0.0f) break;
+        storage_module->AddResource(resource.first, amount);
+        target_asteroid->TakeResource(resource.first, amount);
+        mining_credit -= amount;
     }
 }
 

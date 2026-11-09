@@ -125,8 +125,38 @@ principal->user_id
         if (command == "create_craft") {
             return Success(CreateEntity(&world_, principal));
         }
-
         std::lock_guard<std::mutex> lock(world_.GetMutex());
+        if (command == "mine") {
+            const auto craft_id = Integer(request, "craft_id");
+            const auto asteroid_id = Integer(request, "asteroid_id");
+            const auto entities = world_.GetEntities();
+            const auto ship = craft_id >= 0 ? entities.find(static_cast<std::size_t>(craft_id)) : entities.end();
+            const auto rock = asteroid_id >= 0 ? entities.find(static_cast<std::size_t>(asteroid_id)) : entities.end();
+            if (ship == entities.end() || rock == entities.end())
+                throw ApiError(404, "NOT_FOUND", "Корабль или астероид не найден.");
+            if (ship->second->owner != principal)
+                throw ApiError(403, "FORBIDDEN", "Можно управлять только своими кораблями.");
+            if (ship->second->GetType() != CRAFT || rock->second->GetType() != ASTEROID)
+                throw ApiError(400, "INVALID_TARGET", "Нужны ID корабля и астероида.");
+            auto* craft = static_cast<Craft*>(ship->second);
+            auto* asteroid = static_cast<Asteroid*>(rock->second);
+            if (asteroid->GetInventory().empty()) throw ApiError(400, "DEPLETED", "Астероид истощён.");
+            StorageModule* storage = nullptr;
+            MiningModule* mining = nullptr;
+            PropulsionModule* propulsion = nullptr;
+            for (const auto& module : craft->GetModules()) {
+                if (module->GetType() == STORAGE) storage = static_cast<StorageModule*>(module.get());
+                if (module->GetType() == MINING) mining = static_cast<MiningModule*>(module.get());
+                if (module->GetType() == PROPULSION) propulsion = static_cast<PropulsionModule*>(module.get());
+            }
+            if (!mining || !storage)
+                throw ApiError(400, "MISSING_MODULE", "Нужны добывающий модуль и хранилище.");
+            if (!propulsion && (asteroid->GetPosition() - craft->GetPosition()).Magnitude() >= 20.0f)
+                throw ApiError(400, "OUT_OF_RANGE", "Без двигателя добыча доступна только ближе 20 единиц.");
+            if (propulsion) propulsion->FlyTo(asteroid->GetPosition());
+            mining->MineResource(asteroid, storage);
+            return Success(GetEntity(craft));
+        }
         if (command == "fly_to") {
             const auto id = Integer(request, "entity_id");
             const Vector2 target{Coordinate(request, "x"), Coordinate(request, "y")};
@@ -146,6 +176,8 @@ principal->user_id
                 }
             }
             if (!propulsion) throw ApiError(400, "NO_PROPULSION", "У корабля нет двигателя.");
+            for (const auto& module : static_cast<Craft*>(entity)->GetModules())
+                if (module->GetType() == MINING) static_cast<MiningModule*>(module.get())->StopMining();
             return Success(GetEntity(entity));
         }
         if (command == "get_map") return Success(GetMap(&world_));

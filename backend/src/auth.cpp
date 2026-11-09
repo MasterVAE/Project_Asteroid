@@ -258,7 +258,7 @@ boost::json::value AuthStore::CreateKey(const AuthContext& context, const std::s
     insert.Bind(1, context.principal->user_id); insert.Bind(2, Digest(token)); insert.Bind(3, name);
     insert.Bind(4, token.substr(0, 16)); insert.Bind(5, now); insert.Bind(6, expires); insert.Next();
     return boost::json::object{{"id", sqlite3_last_insert_rowid(db_)}, {"key", token},
-        {"name", name}, {"expires_at", expires}, {"scope", "game:read game:move game:create"}};
+        {"name", name}, {"expires_at", expires}, {"scope", "game:read game:move game:create game:mine"}};
 }
 
 boost::json::value AuthStore::ListKeys(const AuthContext& context) {
@@ -268,7 +268,7 @@ boost::json::value AuthStore::ListKeys(const AuthContext& context) {
     select.Bind(1, context.principal->user_id);
     boost::json::array result;
     while (select.Next()) result.push_back(boost::json::object{{"id", select.Int(0)}, {"name", select.Text(1)},
-        {"prefix", select.Text(2)}, {"created_at", select.Int(3)}, {"expires_at", select.Int(4)}, {"scope", "game:read game:move game:create"}});
+        {"prefix", select.Text(2)}, {"created_at", select.Int(3)}, {"expires_at", select.Int(4)}, {"scope", "game:read game:move game:create game:mine"}});
     return result;
 }
 
