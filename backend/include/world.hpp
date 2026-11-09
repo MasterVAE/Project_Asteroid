@@ -2,10 +2,14 @@
 
 #include <cmath>
 #include <cstddef>
+#include <memory>
+#include <mutex>
 #include <string>
 #include <unordered_map>
 #include <utility>
 #include <vector>
+
+#include "resources.hpp"
 
 class Vector2
 {
@@ -17,6 +21,46 @@ public:
     float Magnitude() const
     {
         return std::sqrt(x * x + y * y);
+    }
+    Vector2 operator+(const Vector2& other) const
+    {
+        return Vector2(x + other.x, y + other.y);
+    }
+    Vector2 operator-(const Vector2& other) const
+    {
+        return Vector2(x - other.x, y - other.y);
+    }
+    Vector2 operator*(float scalar) const
+    {
+        return Vector2(x * scalar, y * scalar);
+    }
+    Vector2 operator/(float scalar) const
+    {
+        return Vector2(x / scalar, y / scalar);
+    }
+    Vector2& operator+=(const Vector2& other)
+    {
+        x += other.x;
+        y += other.y;
+        return *this;
+    }
+    Vector2& operator-=(const Vector2& other)
+    {
+        x -= other.x;
+        y -= other.y;
+        return *this;
+    }
+    Vector2& operator*=(float scalar)
+    {           
+        x *= scalar;
+        y *= scalar;
+        return *this;
+    }
+    Vector2& operator/=(float scalar)
+    {
+        x /= scalar;
+        y /= scalar;
+        return *this;
     }
 };
 
@@ -33,7 +77,6 @@ class Entity
     ENTITY_TYPE type_;
 
     std::size_t id_;
-
 
 public:
     Entity(ENTITY_TYPE type, std::size_t id) : position{0.0f, 0.0f}, velocity{0.0f, 0.0f}, type_(type), id_(id){}
@@ -52,56 +95,123 @@ public:
 
     virtual ~Entity() = default;
 
+    virtual void Update(float delta_time) = 0;
 };
 
 class Asteroid : public Entity
 {
-    std::vector<std::pair<std::string, float>> resources;
+    std::unordered_map<RESOURCE_TYPE, float> inventory;
 public:
 
     Asteroid(std::size_t id) : Entity(ASTEROID, id) {}
     Asteroid(const Vector2& pos, const Vector2& vel, std::size_t id) : Entity(pos, vel, ASTEROID, id) {}
 
-    void AddResource(const std::string& name, float amount) {
-        resources.emplace_back(name, amount);
+    void AddResource(RESOURCE_TYPE resource, float amount)
+    {
+        inventory[resource] += amount;
     }
-
-    std::vector<std::pair<std::string, float>> MineResource(float amount);
-
-    const std::vector<std::pair<std::string, float>>& GetResources() const {
-        return resources;
+    void TakeResource(RESOURCE_TYPE resource, float amount)
+    {
+        auto it = inventory.find(resource);
+        if (it != inventory.end()) {
+            it->second -= amount;
+            if (it->second <= 0.0f) {
+                inventory.erase(it);
+            }
+        }
     }
+    const std::unordered_map<RESOURCE_TYPE, float>& GetInventory() const { return inventory; }
+
+
+
+    void Update(float delta_time) override { }
 };
 
 enum MODULE_TYPE
 {
     MINING,
     CRAFTING,
-    STORAGE
+    STORAGE,
+    REACTOR,
+    PROPULSION
 };
+class Craft;
 
 class Module
 {
     MODULE_TYPE type_;
+    Craft* parent_craft_; // Указатель на родительский корабль, если необходимо
 
 public:
-    Module(MODULE_TYPE type) : type_(type) {}
+    Module(MODULE_TYPE type, Craft* parent) : type_(type), parent_craft_(parent) {}
     MODULE_TYPE GetType() const { return type_; }
+    virtual void Update(float delta_time) = 0; // Чисто виртуальная функция для обновления модуля
+    Craft* GetParentCraft() const { return parent_craft_; }
 };
+
+class StorageModule : public Module
+{
+    std::unordered_map<RESOURCE_TYPE, float> inventory;
+
+public:
+    StorageModule(Craft* parent) : Module(STORAGE, parent) {}
+    const std::unordered_map<RESOURCE_TYPE, float>& GetInventory() const { return inventory; }
+    float GetResourceAmount(RESOURCE_TYPE resource) const;
+    void AddResource(RESOURCE_TYPE resource, float amount);
+    void RemoveResource(RESOURCE_TYPE resource, float amount);
+
+    void Update(float delta_time) override;
+};
+
+class MiningModule : public Module
+{
+    Asteroid* target_asteroid = nullptr;
+    StorageModule* storage_module = nullptr;
+public:
+    MiningModule(Craft* parent) : Module(MINING, parent) {};
+    void MineResource(Asteroid* asteroid, StorageModule* storage) {
+        target_asteroid = asteroid;
+        storage_module = storage;
+    };
+    void Update(float delta_time) override;
+};
+
+class PropulsionModule : public Module
+{
+    float acceleration;
+    Vector2 target;
+public:
+    PropulsionModule(Craft* parent, float acceleration) : Module(PROPULSION, parent), acceleration(acceleration) {}
+    float GetAcceleration() const { return acceleration; }
+    void FlyTo(const Vector2& target) { this->target = target; }
+    const Vector2& GetTarget() const { return target; }
+    void Update(float delta_time) override;
+};
+
 
 class Craft : public Entity
 {
-    std::vector<Module> modules;
+    std::vector<std::unique_ptr<Module>> modules;
 public:
-    std::vector<Module> GetModules() const { return modules; }
-    void AddModule(const Module& module) { modules.push_back(module); }
+    const std::vector<std::unique_ptr<Module>>& GetModules() const { return modules; }
+    void AddModule(std::unique_ptr<Module> module) { modules.push_back(std::move(module)); }
+
     Craft(std::size_t id) : Entity(CRAFT, id) {}
-    Craft(const Vector2& pos, const Vector2& vel, std::size_t id) : Entity(pos, vel, CRAFT, id) {}
+    Craft(const Vector2& pos, const Vector2& vel, std::size_t id)
+        : Entity(pos, vel, CRAFT, id) {}
+    
+    void Update(float delta_time) override
+    {
+        for (const auto& module : modules) {
+            module->Update(delta_time);
+        }
+    }
 };
 
 
 class World
 {
+    mutable std::mutex mutex_;
     std::unordered_map<std::size_t, Entity*> entities;
     std::unordered_map<std::size_t, Entity*> asteroids;
     std::unordered_map<std::size_t, Entity*> crafts;
@@ -111,6 +221,7 @@ class World
     std::size_t next_entity_id = 1;
 
 public:
+    std::mutex& GetMutex() const { return mutex_; }
     std::unordered_map<std::size_t, Entity*> GetEntities() const { return entities; }
     World();
     ~World()
@@ -122,5 +233,8 @@ public:
 };
 
 World* LoadWorld(const std::string& filename);
+void SaveWorld(const World* world, const std::string& filename);
 
-void UpdateWorld(World* world);
+void UpdateWorld(World* world, float delta_time);
+
+Vector2 GetRandomPosition(const Vector2& size);

@@ -1,6 +1,6 @@
 #pragma once
 
-#include <boost/json/value.hpp>
+#include <boost/json/fwd.hpp>
 #include <string>
 
 class World;

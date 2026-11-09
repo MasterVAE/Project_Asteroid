@@ -4,10 +4,21 @@
 #include <boost/asio/io_context.hpp>
 #include <boost/asio/ip/tcp.hpp>
 #include <boost/beast/core/buffers_to_string.hpp>
+#include <boost/beast/core/file_base.hpp>
 #include <boost/beast/core/flat_buffer.hpp>
 #include <boost/beast/core/role.hpp>
 #include <boost/beast/core/tcp_stream.hpp>
-#include <boost/beast/http.hpp>
+#include <boost/beast/http/empty_body.hpp>
+#include <boost/beast/http/field.hpp>
+#include <boost/beast/http/file_body.hpp>
+#include <boost/beast/http/message.hpp>
+#include <boost/beast/http/parser.hpp>
+#include <boost/beast/http/read.hpp>
+#include <boost/beast/http/status.hpp>
+#include <boost/beast/http/string_body.hpp>
+#include <boost/beast/http/verb.hpp>
+#include <boost/beast/http/write.hpp>
+#include <boost/beast/websocket/rfc6455.hpp>
 #include <boost/beast/websocket/stream.hpp>
 #include <boost/beast/websocket/stream_base.hpp>
 #include <boost/json/object.hpp>
@@ -26,6 +37,7 @@
 #include <functional>
 #include <iostream>
 #include <memory>
+#include <mutex>
 #include <ostream>
 #include <string>
 #include <unordered_map>
@@ -134,6 +146,7 @@ public:
 
         if(type == "request")
         {
+            std::lock_guard<std::mutex> lock(server_.world->GetMutex());
             std::string request_type = obj.at("request_type").as_string().c_str();
             if(request_type == "get_map")
             {
@@ -263,6 +276,7 @@ private:
             {"/index.html", {"index.html", "text/html; charset=utf-8"}},
             {"/style.css", {"style.css", "text/css; charset=utf-8"}},
             {"/app.js", {"app.js", "text/javascript; charset=utf-8"}},
+            {"/interpolation.js", {"interpolation.js", "text/javascript; charset=utf-8"}},
             {"/asteroidAPI.js", {"asteroidAPI.js", "text/javascript; charset=utf-8"}}
         };
         const auto file = files.find(target);

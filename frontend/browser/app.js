@@ -1,13 +1,16 @@
 import { AsteroidAPI } from './asteroidAPI.js';
+import { ShipInterpolation } from './interpolation.js';
 
 const $ = id => document.getElementById(id);
 const api = new AsteroidAPI();
+const interpolation = new ShipInterpolation();
 const canvas = $('map');
 const ctx = canvas.getContext('2d');
 const camera = { x: 0, y: 0, zoom: 1 };
 let width = 0, height = 0, entities = [], selected = null;
 let wanted = false, endpoint = '', generation = 0, retry = 0;
-let retryTimer, pollTimer, drag, frame;
+let retryTimer, pollTimer, drag;
+let frame = null, renderedAt = 0;
 
 function status(text, connected = false) {
   $('status').textContent = text;
@@ -17,6 +20,8 @@ function status(text, connected = false) {
 function retryConnection() {
   if (!wanted || retryTimer) return;
   clearTimeout(pollTimer);
+  interpolation.freeze(performance.now());
+  draw();
   const delay = Math.min(1000 * 2 ** retry++, 10000);
   status(`Повтор через ${delay / 1000} с`);
   $('message').textContent = 'Нет связи. Последняя полученная карта сохранена на экране.';
@@ -50,6 +55,7 @@ async function poll(current) {
     if (current !== generation || !wanted) return;
     entities = map.entities.filter(entity => entity?.position &&
       Number.isFinite(entity.position.x) && Number.isFinite(entity.position.y));
+    interpolation.update(entities, performance.now());
     if (!hasMap) { hasMap = true; fit(); }
     if (selected) selected = entities.find(entity => selected.id !== undefined
       ? entity.id === selected.id
@@ -74,6 +80,8 @@ function stop() {
   clearTimeout(retryTimer);
   clearTimeout(pollTimer);
   retryTimer = null;
+  interpolation.freeze(performance.now());
+  draw();
   api.disconnect();
   $('disconnect').disabled = true;
 }
@@ -104,7 +112,8 @@ function project(position) {
 
 function fit() {
   if (!entities.length) { camera.x = camera.y = 0; camera.zoom = 1; draw(); return; }
-  const xs = entities.map(entity => entity.position.x), ys = entities.map(entity => entity.position.y);
+  const positions = entities.map(entity => interpolation.sample(entity, performance.now()).position);
+  const xs = positions.map(position => position.x), ys = positions.map(position => position.y);
   const minX = Math.min(...xs), maxX = Math.max(...xs), minY = Math.min(...ys), maxY = Math.max(...ys);
   const top = document.querySelector('header').getBoundingClientRect().bottom + 24;
   const bottom = document.querySelector('.toolbar').getBoundingClientRect().top - 24;
@@ -124,11 +133,12 @@ function zoom(factor, x = width / 2, y = height / 2) {
 }
 
 function draw() {
-  cancelAnimationFrame(frame);
-  frame = requestAnimationFrame(render);
+  if (frame === null) frame = requestAnimationFrame(render);
 }
 
-function render() {
+function render(now) {
+  frame = null;
+  renderedAt = now;
   const dpr = Math.min(devicePixelRatio || 1, 2);
   ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
   ctx.fillStyle = '#080e19';
@@ -150,7 +160,8 @@ function render() {
   ctx.moveTo(0, origin.y); ctx.lineTo(width, origin.y); ctx.stroke();
 
   for (const entity of entities) {
-    const p = project(entity.position);
+    const pose = interpolation.sample(entity, now);
+    const p = project(pose.position);
     if (p.x < -25 || p.y < -25 || p.x > width + 25 || p.y > height + 25) continue;
     ctx.save(); ctx.translate(p.x, p.y);
     if (selected === entity) {
@@ -159,7 +170,7 @@ function render() {
     }
     ctx.beginPath();
     if (entity.type === 'craft') {
-      const velocity = entity.velocity;
+      const velocity = pose.velocity;
       if (velocity && Math.hypot(velocity.x, velocity.y) > 0) ctx.rotate(Math.atan2(velocity.x, velocity.y));
       ctx.moveTo(0, -11); ctx.lineTo(8, 8); ctx.lineTo(0, 4); ctx.lineTo(-8, 8);
       ctx.fillStyle = '#6edbff'; ctx.strokeStyle = '#c1f1ff';
@@ -176,12 +187,13 @@ function render() {
     ctx.closePath(); ctx.fill(); ctx.stroke(); ctx.restore();
   }
   $('scale').textContent = `${Math.round(camera.zoom * 100)}% · сетка ${step} ед.`;
+  if (interpolation.isAnimating(now)) draw();
 }
 
 async function selectAt(x, y) {
   let nearest = null, distance = 20;
   for (const entity of entities) {
-    const p = project(entity.position), d = Math.hypot(x - p.x, y - p.y);
+    const p = project(interpolation.sample(entity, renderedAt).position), d = Math.hypot(x - p.x, y - p.y);
     if (d < distance) { nearest = entity; distance = d; }
   }
   selected = nearest;

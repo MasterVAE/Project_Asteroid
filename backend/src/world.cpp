@@ -1,14 +1,23 @@
 #include "world.hpp"
 
-#include <algorithm>
 #include <fstream>
 #include <iostream>
+#include <memory>
 #include <ostream>
 #include <random>
 #include <string>
 #include <unordered_map>
 #include <utility>
-#include <vector>
+
+#include "resources.hpp"
+
+Vector2 GetRandomPosition(const Vector2& size)
+{
+    std::random_device rd;
+    std::mt19937 gen(rd());
+    std::uniform_real_distribution<float> dist(-size.x / 2.0f, size.x / 2.0f);
+    return Vector2(dist(gen), dist(gen));
+}
 
 World* LoadWorld(const std::string& filename = "world.json")
 {
@@ -25,61 +34,56 @@ World* LoadWorld(const std::string& filename = "world.json")
     return world;
 }
 
-void UpdateWorld(World* world)
+void UpdateWorld(World* world, float delta_time)
 {
-    
+    for (const auto& pair : world->GetEntities()) {
+        Entity* entity = pair.second;
+
+        entity->Update(delta_time); // Вызов метода Update для каждой сущности
+
+        Vector2 pos = entity->GetPosition();
+        Vector2 vel = entity->GetVelocity();
+
+        pos.x += vel.x * delta_time;
+        pos.y += vel.y * delta_time;
+
+        entity->SetPosition(pos);
+    }
 }
 
-std::vector<std::pair<std::string, float>> Asteroid::MineResource(float amount) {
-    std::vector<std::pair<std::string, float>> minedResources;
-    if (amount <= 0.0f) {
-        return minedResources;
+void SaveWorld(const World* world, const std::string& filename = "world.json")
+{
+    std::ofstream file(filename);
+
+    if (!file.is_open()) {
+        std::cout << "Не удалось открыть файл для записи!" << std::endl;
+        return;
     }
-
-    for (auto& resource : resources) {
-        if (resource.second <= 0.0f) {
-            continue;
-        }
-
-        const float minedAmount = std::min(amount, resource.second);
-        minedResources.emplace_back(resource.first, minedAmount);
-        resource.second -= minedAmount;
-    }
-
-    if (std::all_of(resources.begin(), resources.end(), [](const auto& resource) {
-        return resource.second <= 0.0f;
-    })) {
-       //TODO
-    }
-
-    return minedResources;
+    // TODO: Implement saving the world state to the file in JSON format
+    
+    file.close();
 }
 
 
 World::World()
 {
-    std::random_device rd;
-    std::mt19937 gen(rd());
-    std::uniform_real_distribution<float> dist(-size.x / 2.0f, size.x / 2.0f);
     for(int i = 0; i < 100; ++i)
     {
-        float x = dist(gen);
-        float y = dist(gen);
-
-        Asteroid* asteroid = new Asteroid(Vector2(x, y), Vector2(0.0f, 0.0f), next_entity_id++);
-        asteroid->AddResource("Iron", 100.0f);
-        asteroid->AddResource("Gold", 50.0f);
+        Vector2 pos = GetRandomPosition(size);
+        Asteroid* asteroid = new Asteroid(pos, Vector2(0.0f, 0.0f), next_entity_id++);
+        asteroid->AddResource(RESOURCE_TYPE::IRON, 100.0f);
+        asteroid->AddResource(RESOURCE_TYPE::COPPER, 50.0f);
         entities.insert({asteroid->GetId(), asteroid});
         asteroids.insert({asteroid->GetId(), asteroid});
     }
     for (int i = 0; i < 10; ++i)
     {
-        float x = dist(gen);
-        float y = dist(gen);
+        Vector2 pos = GetRandomPosition(size);
 
-        Craft* craft = new Craft(Vector2(x, y), Vector2(0.0f, 0.0f), next_entity_id++);
-        craft->AddModule(Module(MINING));
-        craft->AddModule(Module(STORAGE));
+        Craft* craft = new Craft(pos, Vector2(0.0f, 0.0f), next_entity_id++);
+        craft->AddModule(std::make_unique<MiningModule>(craft));
+        craft->AddModule(std::make_unique<StorageModule>(craft));
+        craft->AddModule(std::make_unique<PropulsionModule>(craft, 1.0f));
         entities.insert({craft->GetId(), craft});
         crafts.insert({craft->GetId(), craft});
     }

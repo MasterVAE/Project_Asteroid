@@ -4,7 +4,7 @@
 #include <boost/json/object.hpp>
 #include <boost/json/value.hpp>
 
-#include <string>
+#include <memory>
 #include <unordered_map>
 #include <utility>
 #include <vector>
@@ -60,7 +60,7 @@ json::value GetEntity(const Entity* entity)
             entity_obj["velocity"] = { {"x", asteroid->GetVelocity().x}, {"y", asteroid->GetVelocity().y} };
 
             json::array resources_array;
-            for (const auto& resource : asteroid->GetResources()) {
+            for (const auto& resource : asteroid->GetInventory()) {
                 json::object resource_obj;
                 resource_obj["name"] = resource.first;
                 resource_obj["amount"] = resource.second;
@@ -85,7 +85,7 @@ json::value GetEntity(const Entity* entity)
             json::array modules_array;
             for (const auto& module : craft->GetModules()) {
                 json::object module_obj;
-                module_obj["type"] = module.GetType();
+                module_obj["type"] = module->GetType();
                 modules_array.push_back(module_obj);
             }
             entity_obj["modules"] = modules_array;
