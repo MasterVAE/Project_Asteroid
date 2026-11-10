@@ -6,6 +6,7 @@ let registration = false;
 let pending = false;
 let player = null;
 let crafts = [];
+let worldReceived = false;
 let selectedId = null;
 let hitTargets = [];
 let scriptLoading = false;
@@ -64,6 +65,9 @@ function send(packet) {
 }
 
 function connect() {
+  crafts = [];
+  worldReceived = false;
+  updateShipInfo();
   // HTTPS pages automatically use WSS on the same host and port.
   socket = new WebSocket(`${location.protocol === 'https:' ? 'wss:' : 'ws:'}//${location.host}/ws`);
   socket.binaryType = 'arraybuffer';
@@ -78,6 +82,7 @@ function connect() {
       const response = decodeResponse(data);
       // World snapshots arrive independently of the response to a UI request.
       if (response.type === Response.World) {
+        worldReceived = true;
         crafts = response.crafts;
         updateShipInfo(); drawField(); updateButtons();
         return;
@@ -110,6 +115,8 @@ function connect() {
   socket.onclose = () => {
     const wasLoggedIn = !!player;
     pending = false;
+    crafts = [];
+    worldReceived = false;
     showPlayer(null);
     $('connection').textContent = 'Восстанавливаем связь…';
     $('connection').classList.remove('online');
@@ -147,7 +154,9 @@ function updateShipInfo() {
     ? `Судно #${craft.id}\nВладелец: ${craft.owner} (#${craft.ownerId})\nКоординаты: ${craft.x.toFixed(1)}, ${craft.y.toFixed(1)}\nСкорость: ${craft.vx.toFixed(1)}, ${craft.vy.toFixed(1)}\nМодули: ${craft.modules}\nСкрипт: ${scriptStates[craft.scriptState] ?? 'неизвестно'}`
     : 'Выберите судно на карте или в списке.';
   $('script-controls').hidden = !craft || craft.ownerId !== player?.userId;
-  $('world-count').textContent = `СУДА: ${crafts.length} · ОБНОВЛЕНИЕ 10 ГЦ`;
+  $('world-count').textContent = worldReceived
+    ? `СУДА: ${crafts.length} · ОБНОВЛЕНИЕ 10 ГЦ`
+    : 'Ожидание данных мира…';
 }
 function selectShip(id) {
   selectedId = id;

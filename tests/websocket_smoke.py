@@ -150,6 +150,10 @@ def main():
             for client, name in [(a, 'alpha'), (b, 'beta')]:
                 reply = client.request(b'\x02' + string(name) + string('password123'), 128)
                 assert reply[1] == 0
+                player_id, = struct.unpack_from('<I', reply, 2)
+                snapshot = client.wait(130, lambda p: any(s['owner'] == player_id for s in ships(p)))
+                owned = [ship for ship in ships(snapshot) if ship['owner'] == player_id]
+                assert len(owned) == 1 and owned[0]['name'] == name, owned
             # A guest receives unsolicited snapshots with all registered ships.
             world = ships(guest.wait(130, lambda p: struct.unpack_from('<I', p, 1)[0] == 2))
             own = next(ship['id'] for ship in world if ship['name'] == 'alpha')

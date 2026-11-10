@@ -32,6 +32,7 @@ const { Writer } = await import(protocolUrl);
 await import(`data:text/javascript;base64,${Buffer.from(appSource.replace('./protocol.js', protocolUrl)).toString('base64')}`);
 const socket = sockets[0];
 socket.onopen();
+assert.equal(element('world-count').textContent, 'Ожидание данных мира…');
 const dispatch = (packet) => socket.onmessage({ data: packet.finish().buffer });
 const world = () => {
   const out = new Writer(); out.u8(130); out.u32(2);
@@ -47,6 +48,7 @@ element('auth-form').onsubmit({ preventDefault() {} });
 assert.equal(socket.sent[0][0], 1);
 assert.equal(element('submit').disabled, true);
 dispatch(world());
+assert.equal(element('world-count').textContent, 'СУДА: 2 · ОБНОВЛЕНИЕ 10 ГЦ');
 assert.equal(element('submit').disabled, true, 'snapshot must not resolve the pending login');
 const auth = new Writer(); auth.u8(128); auth.u8(0); auth.u32(10); auth.string('mine'); auth.string('');
 dispatch(auth);
@@ -69,4 +71,11 @@ assert.equal(element('ship-info').innerHTML, undefined, 'names are rendered as t
 element('ship-list').value = '1'; element('ship-list').onchange();
 element('stop-script').onclick();
 assert.equal(socket.sent.at(-1)[0], 5);
+const originalTimeout = globalThis.setTimeout;
+const reconnectDelays = [];
+globalThis.setTimeout = (callback, delay) => { reconnectDelays.push(delay); };
+try { socket.onclose(); } finally { globalThis.setTimeout = originalTimeout; }
+assert.deepEqual(reconnectDelays, [2000]);
+assert.equal(element('world-count').textContent, 'Ожидание данных мира…');
+assert.equal(element('ship-list').children.length, 1, 'disconnect must clear the old world');
 console.log('Client interaction tests passed');
