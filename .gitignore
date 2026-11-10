@@ -1,3 +1,4 @@
 build/
 promt.md
 data/
+__pycache__/

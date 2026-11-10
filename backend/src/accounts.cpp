@@ -57,6 +57,7 @@ void Accounts::LoadPlayers(World& world) {
         world.players.try_emplace(id, Player{id, username, nullptr});
     }
     if (result != SQLITE_DONE) throw std::runtime_error(sqlite3_errmsg(db_));
+    for (auto& entry : world.players) world.EnsureCraft(entry.second);
 }
 
 protocol::AuthResponse Accounts::authenticate(const protocol::Credentials& c, bool registration) {

@@ -26,6 +26,7 @@ bool Connection::Login(uint32_t player_id, const std::string& username) {
     auto result = world_.players.try_emplace(player_id, Player{player_id, username, nullptr});
     Player& target = result.first->second;
     if (target.connection) return false; // A player can use only one connection.
+    world_.EnsureCraft(target);
     player = &target;
     target.connection = this;
     return true;

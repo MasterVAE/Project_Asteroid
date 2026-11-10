@@ -10,6 +10,9 @@
 #include <filesystem>
 #include <iostream>
 #include <thread>
+#include <deque>
+#include <functional>
+#include <fcntl.h>
 
 namespace net = boost::asio;
 namespace beast = boost::beast;
@@ -24,7 +27,7 @@ std::string setting(const char* name, const char* fallback) {
     return value && *value ? value : fallback;
 }
 
-std::vector<uint8_t> handle_packet(const std::string& bytes, Connection& connection, Accounts& accounts) {
+std::vector<uint8_t> handle_packet(const std::string& bytes, Connection& connection, Accounts& accounts, World& world) {
     protocol::Reader reader(bytes);
     const auto type = static_cast<protocol::Request>(reader.u8());
     switch (type) {
@@ -43,6 +46,37 @@ std::vector<uint8_t> handle_packet(const std::string& bytes, Connection& connect
         reader.finish();
         connection.Logout();
         return {static_cast<uint8_t>(protocol::Response::Logout)};
+    case protocol::Request::AttachScript:
+    case protocol::Request::StopScript:
+    case protocol::Request::InspectScript: {
+        const auto craft_id = reader.u32();
+        const auto source = type == protocol::Request::AttachScript ? reader.long_string() : std::string{};
+        reader.finish();
+        std::shared_ptr<ScriptRuntime> previous;
+        protocol::Writer out;
+        {
+            std::lock_guard<std::mutex> lock(world.mutex);
+            if (!connection.player) return protocol::error("Сначала войдите.");
+            Craft* target = nullptr;
+            for (auto& craft : world.crafts)
+                if (craft.GetId() == craft_id) { target = &craft; break; }
+            if (!target || target->GetOwner() != connection.player)
+                return protocol::error("Управлять скриптом может только владелец судна.");
+            if (type == protocol::Request::AttachScript) {
+                auto runtime = std::make_shared<ScriptRuntime>(source);
+                previous = std::move(target->script);
+                if (previous) previous->Stop();
+                target->script = std::move(runtime);
+                target->script_source = source;
+            } else if (type == protocol::Request::StopScript && target->script) target->script->Stop();
+            out.u8(static_cast<uint8_t>(protocol::Response::Script));
+            out.u32(craft_id);
+            out.u8(static_cast<uint8_t>(target->script ? target->script->state() : ScriptRuntime::State::None));
+            out.string(target->script ? target->script->log() : "");
+        }
+        // The old worker may wait for Docker cleanup; never join under world.mutex.
+        return out.bytes;
+    }
     default:
         return protocol::error("Неизвестный тип запроса.");
     }
@@ -52,31 +86,68 @@ template<class Stream>
 void serve_websocket(Stream stream, const http::request<http::string_body>& request,
                      Accounts& accounts, World& world) {
     websocket::stream<Stream> ws(std::move(stream));
-    ws.read_message_max(4096);
+    ws.read_message_max(protocol::MaxMessageBytes);
     ws.accept(request);
     ws.binary(true);
-    Connection connection(world); // Destructor removes both links even on exceptions.
-    for (;;) {
-        beast::flat_buffer buffer;
+    Connection connection(world);
+    beast::flat_buffer buffer;
+    net::steady_timer timer(ws.get_executor());
+    std::deque<std::shared_ptr<std::vector<uint8_t>>> outgoing;
+    size_t queued_bytes = 0;
+    bool stopped = false;
+    auto stop = [&] {
+        if (stopped) return;
+        stopped = true;
+        timer.cancel();
         beast::error_code ec;
-        ws.read(buffer, ec);
-        if (ec == websocket::error::closed) return;
-        if (ec) throw beast::system_error(ec);
-        if (!ws.got_binary()) {
-            ws.close(websocket::close_code::unknown_data);
-            return;
+        beast::get_lowest_layer(ws).cancel(ec);
+        beast::get_lowest_layer(ws).close(ec);
+    };
+    std::function<void()> write, read, tick;
+    write = [&] {
+        ws.async_write(net::buffer(*outgoing.front()), [&](beast::error_code ec, size_t) {
+            if (ec) { stop(); return; }
+            queued_bytes -= outgoing.front()->size();
+            outgoing.pop_front();
+            if (!stopped && !outgoing.empty()) write();
+        });
+    };
+    auto enqueue = [&](std::vector<uint8_t> bytes) {
+        if (stopped) return;
+        if (bytes.size() > protocol::MaxMessageBytes || queued_bytes + bytes.size() > 4 * 1024 * 1024) {
+            stop(); return; // Disconnect slow consumers instead of accumulating snapshots.
         }
-        std::vector<uint8_t> reply;
-        try {
-            reply = handle_packet(beast::buffers_to_string(buffer.data()), connection, accounts);
-        } catch (const std::invalid_argument& error) {
-            reply = protocol::error(error.what());
-        } catch (const std::exception& error) {
-            std::cerr << "Request: " << error.what() << '\n';
-            reply = protocol::error("Ошибка сервера.");
-        }
-        ws.write(net::buffer(reply));
-    }
+        const bool idle = outgoing.empty();
+        queued_bytes += bytes.size();
+        outgoing.push_back(std::make_shared<std::vector<uint8_t>>(std::move(bytes)));
+        if (idle) write();
+    };
+    read = [&] {
+        ws.async_read(buffer, [&](beast::error_code ec, size_t) {
+            if (ec || !ws.got_binary()) { stop(); return; }
+            try {
+                enqueue(handle_packet(beast::buffers_to_string(buffer.data()), connection, accounts, world));
+            } catch (const std::invalid_argument& error) {
+                enqueue(protocol::error(error.what()));
+            } catch (const std::exception& error) {
+                std::cerr << "Request: " << error.what() << '\n';
+                enqueue(protocol::error("Ошибка сервера."));
+            }
+            buffer.consume(buffer.size());
+            if (!stopped) read();
+        });
+    };
+    tick = [&] {
+        if (stopped) return;
+        enqueue(EncodeWorld(world));
+        if (stopped) return;
+        timer.expires_after(std::chrono::milliseconds(100));
+        timer.async_wait([&](beast::error_code ec) { if (!ec) tick(); });
+    };
+    read();
+    tick();
+    // Each connection has its own io_context. All writes run on this thread.
+    static_cast<net::io_context&>(ws.get_executor().context()).run();
 }
 
 template<class Stream>
@@ -144,15 +215,21 @@ void RunServer(World& world) {
     std::cout << "Web server: " << (cert.empty() ? "http://" : "https://") << address << ':' << port << std::endl;
     for (;;) {
         auto socket = acceptor.accept();
+        fcntl(socket.native_handle(), F_SETFD, FD_CLOEXEC);
         // Simple blocking handlers for the initial skeleton: one thread per connection.
         std::thread([socket = std::move(socket), accounts, tls, frontend, &world, secure = !cert.empty()]() mutable {
             try {
+                // Rebind the accepted native socket to this connection's event loop.
+                net::io_context local_context;
+                const auto protocol = socket.local_endpoint().protocol();
+                const auto native = socket.release();
+                tcp::socket local_socket(local_context, protocol, native);
                 if (secure) {
-                    ssl::stream<tcp::socket> stream(std::move(socket), *tls);
+                    ssl::stream<tcp::socket> stream(std::move(local_socket), *tls);
                     stream.handshake(ssl::stream_base::server);
                     serve_http(std::move(stream), *accounts, world, frontend);
                 } else {
-                    serve_http(std::move(socket), *accounts, world, frontend);
+                    serve_http(std::move(local_socket), *accounts, world, frontend);
                 }
             } catch (const std::exception& error) {
                 std::cerr << "Connection: " << error.what() << '\n';

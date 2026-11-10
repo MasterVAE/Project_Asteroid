@@ -73,3 +73,20 @@ h3 { font-size: 20px; font-weight: 450; margin: 20px 0 0; }
   .game-toolbar .eyebrow { font-size: 8px; letter-spacing: 1px; }
   .player { gap: 10px; }
 }
+
+.world-layout { display: flex; flex: 1; min-height: 0; gap: 18px; }
+.ship-panel { width: 310px; flex-shrink: 0; padding: 20px; overflow: auto; border: 1px solid var(--line); border-radius: 10px; background: var(--panel); }
+#ship-list { width: 100%; padding: 10px; background: var(--bg); color: var(--text); border: 1px solid var(--line); border-radius: 6px; }
+.ship-info { white-space: pre-line; line-height: 1.9; font-size: 13px; overflow-wrap: anywhere; }
+.script-actions { display: flex; flex-wrap: wrap; gap: 8px; }
+#script-file { padding: 8px; margin-bottom: 12px; }
+#script-output { max-height: 180px; overflow: auto; white-space: pre-wrap; overflow-wrap: anywhere; font-size: 11px; color: var(--muted); }
+.map-legend { color: var(--muted); font-size: 11px; line-height: 1.8; }
+#game-canvas { cursor: crosshair; }
+.field-coordinate, .field-caption { pointer-events: none; }
+@media (max-width: 760px) {
+  .game-screen { height: auto; min-height: calc(100dvh - 70px); }
+  .world-layout { flex-direction: column; }
+  .game-field { flex: auto; height: 52vh; min-height: 260px; }
+  .ship-panel { width: 100%; }
+}
