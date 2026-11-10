@@ -9,7 +9,7 @@ World* StartGameServer()
     return new World();
 }
 
-void UpdateGameServer(World* world, float delta_time)
+void UpdateGameServer(World* /*world*/, float /*delta_time*/)
 {
     
 }

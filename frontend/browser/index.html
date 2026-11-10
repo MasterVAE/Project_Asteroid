@@ -1,0 +1,62 @@
+<!doctype html>
+<html lang="ru">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <meta name="theme-color" content="#10191c">
+  <title>Asteroid — игровое пространство</title>
+  <link rel="stylesheet" href="/style.css">
+  <script type="module" src="/app.js"></script>
+</head>
+<body>
+  <header class="topbar">
+    <a class="brand" href="/" aria-label="Asteroid — главная"><span class="brand-mark">A</span> ASTEROID<span class="version">/ 01</span></a>
+    <div id="connection" class="connection" role="status">Подключение…</div>
+  </header>
+
+  <main id="auth-screen" class="auth-screen">
+    <section class="intro">
+      <p class="eyebrow">ВАШ СЛЕДУЮЩИЙ ГОРИЗОНТ</p>
+      <h1>Всё начинается<br>с пустого <em>космоса.</em></h1>
+      <p class="intro-text">Войдите в своё игровое пространство.<br>Историю этого мира мы ещё напишем.</p>
+      <div class="orbit" aria-hidden="true"><div class="planet"></div><span class="satellite"></span><span class="orbit-label">ASTEROID / SPACE TO BUILD</span></div>
+    </section>
+
+    <section class="auth-card" aria-labelledby="auth-title">
+      <p class="eyebrow">ДОБРО ПОЖАЛОВАТЬ НА БОРТ</p>
+      <h2 id="auth-title">Вход в систему</h2>
+      <div class="tabs" aria-label="Выбор формы">
+        <button id="login-tab" class="tab active" type="button" aria-pressed="true">Вход</button>
+        <button id="register-tab" class="tab" type="button" aria-pressed="false">Регистрация</button>
+      </div>
+      <form id="auth-form">
+        <label for="username">Логин</label>
+        <input id="username" name="username" autocomplete="username" maxlength="64" placeholder="Ваш позывной" required>
+        <label for="password">Пароль</label>
+        <input id="password" name="password" type="password" autocomplete="current-password" minlength="8" maxlength="256" placeholder="Не менее 8 байт" required>
+        <div id="confirm-group" hidden>
+          <label for="confirm-password">Повторите пароль</label>
+          <input id="confirm-password" name="confirm-password" type="password" autocomplete="new-password" maxlength="256" placeholder="Ещё раз, для уверенности">
+        </div>
+        <p id="message" class="message" role="status" aria-live="polite"></p>
+        <button id="submit" class="primary" type="submit" disabled><span id="submit-label">Войти</span><span aria-hidden="true">↗</span></button>
+      </form>
+      <p class="card-note">Один аккаунт. Целое пространство возможностей.</p>
+    </section>
+    <footer class="auth-footer"><span>ПРОЕКТ ASTEROID</span><span>НАЧАЛО БОЛЬШОЙ ИСТОРИИ</span></footer>
+  </main>
+
+  <main id="game-screen" class="game-screen" hidden>
+    <div class="game-toolbar">
+      <div><p class="eyebrow">ИГРОВОЕ ПРОСТРАНСТВО</p><h2>Общий космос</h2></div>
+      <div class="player"><span id="player-name"></span><button id="logout" class="secondary" type="button">Выйти ↗</button></div>
+    </div>
+    <section class="game-field" aria-label="Игровое поле">
+      <canvas id="game-canvas" aria-label="Пустое игровое поле со звёздами и координатной сеткой"></canvas>
+      <span class="field-coordinate">SECTOR 00 / 00</span>
+      <div class="field-placeholder"><span class="crosshair" aria-hidden="true">+</span><h3>Место для нового мира</h3><p>Игровое поле готово. Продолжение следует.</p></div>
+      <span class="field-caption">ASTEROID · ИГРОВОЕ ПОЛЕ</span>
+    </section>
+  </main>
+</body>
+</html>
