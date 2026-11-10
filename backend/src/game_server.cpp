@@ -16,3 +16,8 @@ void UpdateGameServer(World* world, float delta_time)
         entity.Update(delta_time);
     }
 }
+
+void Craft::Update(float delta_time)
+{
+
+}

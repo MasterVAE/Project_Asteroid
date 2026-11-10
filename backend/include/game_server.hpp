@@ -34,7 +34,7 @@ public:
     std::size_t GetId() { return id_; };
     Player* GetOwner() { return GetOwner(); }
 
-    virtual void Update(float delta_time);
+    virtual void Update(float delta_time) {};
 };
 
 class Module
@@ -50,6 +50,8 @@ public:
                                                 : Entity(owner, id, pos, ENTITY_TYPE::CRAFT) {};
 
     std::vector<Module>& GetModues() { return modules; }
+
+    void Update(float delta_time) override;
 };
 
 
