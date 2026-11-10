@@ -1,6 +1,2 @@
-build
-.vscode
-Thoughts.md
-data/
-__pycache__/
-*.pyc
+build/
+promt.md
