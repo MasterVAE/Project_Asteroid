@@ -1,5 +1,6 @@
 #include "web_server.hpp"
 #include "accounts.hpp"
+#include "game_server.hpp"
 
 #include <boost/asio.hpp>
 #include <boost/asio/ssl.hpp>
@@ -23,10 +24,7 @@ std::string setting(const char* name, const char* fallback) {
     return value && *value ? value : fallback;
 }
 
-// Future game requests use this ID, never a player ID supplied by the browser.
-struct Session { uint32_t user_id = 0; };
-
-std::vector<uint8_t> handle_packet(const std::string& bytes, Session& session, Accounts& accounts) {
+std::vector<uint8_t> handle_packet(const std::string& bytes, Connection& connection, Accounts& accounts) {
     protocol::Reader reader(bytes);
     const auto type = static_cast<protocol::Request>(reader.u8());
     switch (type) {
@@ -34,14 +32,16 @@ std::vector<uint8_t> handle_packet(const std::string& bytes, Session& session, A
     case protocol::Request::Register: {
         const auto credentials = reader.credentials();
         reader.finish();
-        if (session.user_id) return protocol::error("Сначала выйдите из аккаунта.");
+        if (connection.IsLoggedIn()) return protocol::error("Сначала выйдите из аккаунта.");
         auto response = accounts.authenticate(credentials, type == protocol::Request::Register);
-        if (response.status == protocol::Status::Ok) session.user_id = response.user_id;
+        if (response.status == protocol::Status::Ok &&
+            !connection.Login(response.user_id, response.username))
+            return protocol::error("Этот игрок уже подключён с другого соединения.");
         return protocol::encode(response);
     }
     case protocol::Request::Logout:
         reader.finish();
-        session.user_id = 0;
+        connection.Logout();
         return {static_cast<uint8_t>(protocol::Response::Logout)};
     default:
         return protocol::error("Неизвестный тип запроса.");
@@ -49,12 +49,13 @@ std::vector<uint8_t> handle_packet(const std::string& bytes, Session& session, A
 }
 
 template<class Stream>
-void serve_websocket(Stream stream, const http::request<http::string_body>& request, Accounts& accounts) {
+void serve_websocket(Stream stream, const http::request<http::string_body>& request,
+                     Accounts& accounts, World& world) {
     websocket::stream<Stream> ws(std::move(stream));
     ws.read_message_max(4096);
     ws.accept(request);
     ws.binary(true);
-    Session session;
+    Connection connection(world); // Destructor removes both links even on exceptions.
     for (;;) {
         beast::flat_buffer buffer;
         beast::error_code ec;
@@ -67,7 +68,7 @@ void serve_websocket(Stream stream, const http::request<http::string_body>& requ
         }
         std::vector<uint8_t> reply;
         try {
-            reply = handle_packet(beast::buffers_to_string(buffer.data()), session, accounts);
+            reply = handle_packet(beast::buffers_to_string(buffer.data()), connection, accounts);
         } catch (const std::invalid_argument& error) {
             reply = protocol::error(error.what());
         } catch (const std::exception& error) {
@@ -79,14 +80,14 @@ void serve_websocket(Stream stream, const http::request<http::string_body>& requ
 }
 
 template<class Stream>
-void serve_http(Stream stream, Accounts& accounts, const std::string& frontend) {
+void serve_http(Stream stream, Accounts& accounts, World& world, const std::string& frontend) {
     beast::flat_buffer buffer;
     http::request_parser<http::string_body> parser;
     parser.body_limit(4096);
     http::read(stream, buffer, parser);
     auto request = parser.release();
     if (request.target() == "/ws" && websocket::is_upgrade(request)) {
-        serve_websocket(std::move(stream), request, accounts);
+        serve_websocket(std::move(stream), request, accounts, world);
         return;
     }
     const auto target = request.target().substr(0, request.target().find('?'));
@@ -118,7 +119,7 @@ void serve_http(Stream stream, Accounts& accounts, const std::string& frontend) 
 }
 }
 
-void RunServer() {
+void RunServer(World& world) {
     const auto address = setting("ASTEROID_ADDRESS", "127.0.0.1");
     const int port = std::stoi(setting("ASTEROID_PORT", "8080"));
     if (port < 1 || port > 65535) throw std::runtime_error("Invalid ASTEROID_PORT");
@@ -130,6 +131,7 @@ void RunServer() {
     if (const auto parent = std::filesystem::path(db_path).parent_path(); !parent.empty())
         std::filesystem::create_directories(parent);
     auto accounts = std::make_shared<Accounts>(db_path);
+    accounts->LoadPlayers(world);
     auto tls = std::make_shared<ssl::context>(ssl::context::tls_server);
     if (!cert.empty()) {
         tls->set_options(ssl::context::default_workarounds | ssl::context::no_sslv2 |
@@ -143,14 +145,14 @@ void RunServer() {
     for (;;) {
         auto socket = acceptor.accept();
         // Simple blocking handlers for the initial skeleton: one thread per connection.
-        std::thread([socket = std::move(socket), accounts, tls, frontend, secure = !cert.empty()]() mutable {
+        std::thread([socket = std::move(socket), accounts, tls, frontend, &world, secure = !cert.empty()]() mutable {
             try {
                 if (secure) {
                     ssl::stream<tcp::socket> stream(std::move(socket), *tls);
                     stream.handshake(ssl::stream_base::server);
-                    serve_http(std::move(stream), *accounts, frontend);
+                    serve_http(std::move(stream), *accounts, world, frontend);
                 } else {
-                    serve_http(std::move(socket), *accounts, frontend);
+                    serve_http(std::move(socket), *accounts, world, frontend);
                 }
             } catch (const std::exception& error) {
                 std::cerr << "Connection: " << error.what() << '\n';

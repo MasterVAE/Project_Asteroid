@@ -1,4 +1,5 @@
 #include "accounts.hpp"
+#include "game_server.hpp"
 
 #include <array>
 #include <memory>
@@ -45,6 +46,18 @@ Accounts::Accounts(const std::string& path) {
     }
 }
 Accounts::~Accounts() { sqlite3_close(db_); }
+
+void Accounts::LoadPlayers(World& world) {
+    std::scoped_lock lock(mutex_, world.mutex);
+    auto stmt = prepare(db_, "SELECT id, username FROM accounts");
+    int result;
+    while ((result = sqlite3_step(stmt.get())) == SQLITE_ROW) {
+        const auto id = static_cast<uint32_t>(sqlite3_column_int64(stmt.get(), 0));
+        const auto username = reinterpret_cast<const char*>(sqlite3_column_text(stmt.get(), 1));
+        world.players.try_emplace(id, Player{id, username, nullptr});
+    }
+    if (result != SQLITE_DONE) throw std::runtime_error(sqlite3_errmsg(db_));
+}
 
 protocol::AuthResponse Accounts::authenticate(const protocol::Credentials& c, bool registration) {
     using protocol::Status;

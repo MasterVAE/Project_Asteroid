@@ -52,7 +52,7 @@ ASTEROID_TLS_CERT=/path/fullchain.pem ASTEROID_TLS_KEY=/path/privkey.pem make ru
 
 - `backend/include/protocol.hpp` — типы, структуры ответа, чтение и запись бинарных полей.
 - `frontend/browser/protocol.js` — `loginRequest`, `registerRequest`, `logoutRequest`, `decodeResponse`.
-- `backend/src/web_server.cpp` → `handle_packet` — обработка запросов и ID вошедшего пользователя в `Session`.
+- `backend/src/web_server.cpp` → `handle_packet` — обработка запросов и вошедший игрок в `connection.player`.
 - `backend/src/accounts.cpp` — регистрация, проверка пароля и SQLite.
 - `frontend/browser/app.js` — отправка запросов, переключение экранов, отрисовка поля.
 
@@ -60,10 +60,14 @@ ASTEROID_TLS_CERT=/path/fullchain.pem ASTEROID_TLS_KEY=/path/privkey.pem make ru
 меняйте обе стороны вместе. C++ структуры не копируются в сеть через `memcpy`:
 каждое поле записывается явно, без выравнивания и зависимости от платформы.
 
-Сетевой код использует простой поток на соединение. Игровой цикл работает
-отдельно примерно 60 раз в секунду; сетевой доступ к миру пока не добавлен.
+Игроки и подключения хранятся в `World`: `players` и `connections`, со взаимными
+указателями `player.connection` / `connection.player`. Описание и примеры:
+[docs/players.md](docs/players.md).
+
+Сетевой код использует простой поток на соединение. Игровой цикл работает отдельно.
 Основа WebSocket — [Boost.Beast](https://www.boost.org/doc/libs/latest/libs/beast/doc/html/beast/using_websocket.html).
 
-Проверка: `make test` запускает временные серверы HTTP/WS и HTTPS/WSS,
-проверяет регистрацию, вход, выход и сохранение аккаунта между перезапусками.
+Проверка: `make test` проверяет контейнеры и взаимные указатели, затем запускает
+временные серверы HTTP/WS и HTTPS/WSS, проверяет регистрацию, вход, выход,
+запрет двойного входа и сохранение аккаунта между перезапусками.
 Нужны Python 3 и команда `openssl`; внешние Python-пакеты не используются.

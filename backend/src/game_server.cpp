@@ -9,7 +9,10 @@ World* StartGameServer()
     return new World();
 }
 
-void UpdateGameServer(World* /*world*/, float /*delta_time*/)
+void UpdateGameServer(World* world, float delta_time)
 {
-    
+    for (auto entity : world->entities)
+    {
+        entity.Update(delta_time);
+    }
 }

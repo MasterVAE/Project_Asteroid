@@ -1,4 +1,6 @@
 #pragma once
 
+class World;
+
 // Blocks while serving HTTP + WebSocket. Configuration: ASTEROID_* environment variables.
-void RunServer();
+void RunServer(World& world);

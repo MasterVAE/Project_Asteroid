@@ -11,6 +11,7 @@ endif
 
 SRC = $(wildcard backend/src/*.cpp)
 TARGET = build/asteroid
+PLAYERS_TEST = build/players_test
 
 all: $(TARGET)
 
@@ -26,7 +27,12 @@ re: clean all
 run: all
 	./$(TARGET)
 
-test: all
+$(PLAYERS_TEST): tests/players.cpp backend/src/connection.cpp backend/src/accounts.cpp $(wildcard backend/include/*.hpp)
+	@mkdir -p build
+	$(CXX) $(CPPFLAGS) $(CXXFLAGS) tests/players.cpp backend/src/connection.cpp backend/src/accounts.cpp -o $(PLAYERS_TEST) $(LDLIBS)
+
+test: all $(PLAYERS_TEST)
+	./$(PLAYERS_TEST)
 	python3 tests/websocket_smoke.py
 
 .PHONY: all clean re run test
