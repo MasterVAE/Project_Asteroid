@@ -1,4 +1,4 @@
-build/
-promt.md
-data/
-__pycache__/
+app
+.vscode
+protocol.md
+python_api.txt

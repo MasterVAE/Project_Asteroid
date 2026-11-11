@@ -1,66 +1,30 @@
+CXX = c++
+CXXFLAGS = -std=c++17 -Wall -Wextra
 
-CXX = g++
-CXXFLAGS = -Wall -Wextra -std=c++17 -Ibackend/include
-CPPFLAGS += $(shell pkg-config --cflags openssl sqlite3)
-LDLIBS += $(shell pkg-config --libs openssl sqlite3) -pthread
+# Автоматически узнаем пути к SFML и Boost из Homebrew
+SFML_PREFIX := $(shell brew --prefix sfml)
+BOOST_PREFIX := $(shell brew --prefix boost)
 
-# Homebrew keeps Boost outside the compiler's default search paths.
-ifneq ($(wildcard /opt/homebrew/include/boost),)
-CPPFLAGS += -I/opt/homebrew/include
-endif
+# Добавляем пути к заголовочным файлам SFML, Boost и локальным папкам
+CPPFLAGS = -Iinclude -Ibackend/include -I$(SFML_PREFIX)/include -I$(BOOST_PREFIX)/include
 
-SRC = $(wildcard backend/src/*.cpp)
-TARGET = build/asteroid
-WORLD_TEST = build/world_test
-SCRIPTS_TEST = build/scripts_test
-PROTOCOL_TEST = build/protocol_test
-NODE ?= node
+# Указываем пути к скомпилированным библиотекам и модули SFML + Boost
+LDFLAGS = -L$(SFML_PREFIX)/lib -L$(BOOST_PREFIX)/lib
+LDLIBS = -lsfml-graphics -lsfml-window -lsfml-system -lboost_filesystem -lboost_json -lboost_process
+
+TARGET = app
+SOURCES = $(wildcard backend/src/*.cpp)
+HEADERS = $(wildcard backend/include/*.h backend/include/*.hpp include/*.h include/*.hpp)
+
+.PHONY: all run clean
 
 all: $(TARGET)
-
-$(TARGET): $(SRC) $(wildcard backend/include/*.hpp)
-	@mkdir -p build
-	$(CXX) $(CPPFLAGS) $(CXXFLAGS) $(SRC) -o $(TARGET) $(LDLIBS)
-
-clean:
-	rm -rf build
-
-re: clean all
 
 run: all
 	./$(TARGET)
 
-$(WORLD_TEST): tests/world.cpp backend/src/game_server.cpp backend/src/connection.cpp backend/src/script_runtime.cpp $(wildcard backend/include/*.hpp)
-	@mkdir -p build
-	$(CXX) $(CXXFLAGS) tests/world.cpp backend/src/game_server.cpp backend/src/connection.cpp backend/src/script_runtime.cpp -o $@ -pthread
+$(TARGET): $(SOURCES) $(HEADERS) Makefile
+	$(CXX) $(CPPFLAGS) $(CXXFLAGS) $(SOURCES) $(LDFLAGS) $(LDLIBS) -o $@
 
-$(SCRIPTS_TEST): tests/scripts.cpp tests/fake_docker.py backend/src/script_runtime.cpp backend/include/script_runtime.hpp backend/include/protocol.hpp
-	@mkdir -p build
-	$(CXX) $(CXXFLAGS) tests/scripts.cpp backend/src/script_runtime.cpp -o $@ -pthread
-
-sandbox-image:
-	docker build -t asteroid-python:local backend/scripts
-
-test-sandbox: $(SCRIPTS_TEST)
-	./$(SCRIPTS_TEST) --docker
-
-$(PROTOCOL_TEST): tests/protocol.cpp backend/include/protocol.hpp
-	@mkdir -p build
-	$(CXX) $(CXXFLAGS) tests/protocol.cpp -o $(PROTOCOL_TEST)
-
-test-protocol: $(PROTOCOL_TEST)
-	./$(PROTOCOL_TEST)
-	$(NODE) tests/protocol.mjs
-	$(NODE) tests/app.mjs
-
-test-core: $(PROTOCOL_TEST) $(WORLD_TEST) $(SCRIPTS_TEST)
-	./$(PROTOCOL_TEST)
-	./$(WORLD_TEST)
-	./$(SCRIPTS_TEST)
-
-test-integration: all
-	python3 tests/websocket_smoke.py
-
-test: test-core test-protocol test-integration
-
-.PHONY: all clean re run test test-core test-protocol test-integration sandbox-image test-sandbox
+clean:
+	rm -f $(TARGET)

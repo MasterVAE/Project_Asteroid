@@ -1,30 +1,28 @@
+#include <SFML/Graphics.hpp>
+#include <optional>
 #include <iostream>
-#include <thread>
-#include <chrono>
-#include <csignal>
 
-#include "game_server.hpp"
-#include "web_server.hpp"
+#include "game.hpp"
+#include "render.hpp"
 
-int main() {
-    std::signal(SIGPIPE, SIG_IGN); // A stopped script may close its pipe at any time.
+int main(int argc, char* argv[]) {
 
-    World* world = StartGameServer();
-    std::thread([world] {
-        using Clock = std::chrono::steady_clock;
-        auto last_time = Clock::now();
-        while (true) {
-            const auto current_time = Clock::now();
-            const float delta_time = std::chrono::duration<float>(current_time - last_time).count();
-            last_time = current_time;
-            UpdateGameServer(world, delta_time);
-            std::this_thread::sleep_until(current_time + std::chrono::milliseconds(50));
-        }
-    }).detach();
-    try {
-        RunServer(*world);
-    } catch (const std::exception& error) {
-        std::cerr << "Server: " << error.what() << '\n';
-        return 1;
+    World* world = argc < 2 ? new World() : new World(argv[1]);
+
+    sf::Clock clock;
+
+    sf::RenderWindow window = CreateWindow();
+
+    while (window.isOpen()) {
+        float delta_time = clock.restart().asSeconds();
+
+        HandleEvents(window, world);
+        world->Update(delta_time);
+
+        Render(window, world);
     }
+
+    delete world;
+
+    return 0;
 }
