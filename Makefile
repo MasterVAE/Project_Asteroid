@@ -13,18 +13,29 @@ LDFLAGS = -L$(SFML_PREFIX)/lib -L$(BOOST_PREFIX)/lib
 LDLIBS = -lsfml-graphics -lsfml-window -lsfml-system -lboost_filesystem -lboost_json -lboost_process
 
 TARGET = app
+DEBUG_TARGET = app-debug
+DEBUG_FLAGS = -g -O1 -fno-omit-frame-pointer -fno-optimize-sibling-calls -fsanitize=address,undefined -fno-sanitize-recover=all
 SOURCES = $(wildcard backend/src/*.cpp)
 HEADERS = $(wildcard backend/include/*.h backend/include/*.hpp include/*.h include/*.hpp)
 
-.PHONY: all run clean
+.PHONY: all run debug run-debug clean
 
 all: $(TARGET)
 
 run: all
 	./$(TARGET)
 
+debug: $(DEBUG_TARGET)
+
+run-debug: debug
+	UBSAN_OPTIONS=print_stacktrace=1 ./$(DEBUG_TARGET)
+
 $(TARGET): $(SOURCES) $(HEADERS) Makefile
 	$(CXX) $(CPPFLAGS) $(CXXFLAGS) $(SOURCES) $(LDFLAGS) $(LDLIBS) -o $@
 
+$(DEBUG_TARGET): $(SOURCES) $(HEADERS) Makefile
+	$(CXX) $(CPPFLAGS) $(CXXFLAGS) $(DEBUG_FLAGS) $(SOURCES) $(LDFLAGS) $(LDLIBS) -o $@
+
 clean:
-	rm -f $(TARGET)
+	rm -f $(TARGET) $(DEBUG_TARGET)
+	rm -rf $(DEBUG_TARGET).dSYM

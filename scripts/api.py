@@ -16,6 +16,8 @@ _events = queue.Queue()
 _running = threading.Event()
 _started = False
 
+# Системная фигня
+
 
 def on(name):
     """Регистрация обработчика события."""
@@ -32,28 +34,17 @@ def _send(message):
         sys.stdout.flush()
 
 
-def command(name, **params):
+def command(name, module = "none", **params):
     """Команда C++ без ожидания ответа."""
     _send({
         "type": "command",
-        "name": name,
+        "module" : module,
+        "method": name,
         **params
     })
 
 
-def move_forward(value=1.0):
-    command("thrust", value=value)
-
-
-def rotate(angle):
-    command("rotate", angle=angle)
-
-
-def shoot(enemy_id):
-    command("shoot", enemy_id=enemy_id)
-
-
-def _request(method, timeout=2.0):
+def _request(method, module="none", timeout=2.0):
     """Вызов функции в C++ с ожиданием ответа."""
     if not _running.is_set():
         raise RuntimeError("Connection to C++ closed")
@@ -69,6 +60,7 @@ def _request(method, timeout=2.0):
         _send({
             "type": "request",
             "id": request_id,
+            "module" : module,
             "method": method
         })
 
@@ -89,9 +81,6 @@ def _request(method, timeout=2.0):
 
     return response["result"]
 
-
-def getPos(timeout=2.0):
-    return _request("get_pos", timeout)
 
 
 def _read_messages():
@@ -180,3 +169,38 @@ def start():
 
 def is_running():
     return _running.is_set()
+
+
+# Запросы
+
+def getId(timeout=2.0):
+    return _request("get_id", timeout=timeout)
+
+def getPos(timeout=2.0):
+    return _request("get_position", timeout=timeout)
+
+def getVel(timeout=2.0):
+    return _request("get_veocity", timeout=timeout)
+
+def getAngle(timeout=2.0):
+    return _request("get_angle", timeout=timeout)
+
+def getAngularVelocity(timeout=2.0):
+    return _request("get_anglular_velocity", timeout=timeout)
+
+def getModules(timeout=2.0):
+    return _request("get_modules", timeout=timeout)
+
+def getMaxGyro(timeout=2.0):
+    return _request("get_max_gyro", module="prop0", timeout=timeout)
+
+def getMaxThrottle(timeout=2.0):
+    return _request("get_max_throttle", module="prop0", timeout=timeout)
+
+def throttle(value=1.0):
+    command("set_throttle", module="prop0", value=value)
+
+def gyro(value=1.0):
+    command("set_gyro", module="prop0", value=value)
+
+# модули

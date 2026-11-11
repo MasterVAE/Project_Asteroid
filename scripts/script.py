@@ -14,21 +14,18 @@ def enemy_detected(event):
         file=sys.stderr
     )
 
-    ship.shoot(event["enemy_id"])
-
 
 ship.start()
+modules = ship.getModules()
+print(modules, file=sys.stderr)
+
 
 # Независимая программа корабля
 while ship.is_running():
     try:
-        pos = ship.getPos()
+        #ship.throttle(1)
+        ship.gyro(1)
 
-        print(f"My position: {pos}", file=sys.stderr)
-
-        ship.move_forward(1.0)
-
-        time.sleep(0.5)
 
     except (TimeoutError, RuntimeError) as error:
         print(error, file=sys.stderr)

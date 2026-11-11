@@ -2,3 +2,6 @@ app
 .vscode
 protocol.md
 python_api.txt
+app-debug.dSYM
+app-debug
+scripts/__pycache__

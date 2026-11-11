@@ -68,18 +68,19 @@ void Render(sf::RenderWindow& window, World* world)
     }
     window.draw(grid);
 
-    float radius = 10.0f; 
-    sf::CircleShape circle(radius);
-    circle.setFillColor(sf::Color::Green);
-
-    circle.setOrigin({radius, radius});
+    sf::ConvexShape arrow(3);
+    arrow.setPoint(0, {12.0f, 0.0f});
+    arrow.setPoint(1, {-8.0f, -7.0f});
+    arrow.setPoint(2, {-8.0f, 7.0f});
+    arrow.setFillColor(sf::Color::Green);
 
     for (const auto& entity : world->GetEntities())
     {
-        Vector2 pos = entity.second.GetPosition();
+        Vector2 pos = entity.second->GetPosition();
 
-        circle.setPosition({pos.x, pos.y});
-        window.draw(circle);
+        arrow.setPosition({pos.x, pos.y});
+        arrow.setRotation(sf::radians(-entity.second->GetRotation()));
+        window.draw(arrow);
     }
 
     window.display();
