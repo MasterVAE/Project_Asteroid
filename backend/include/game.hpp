@@ -57,6 +57,7 @@ public:
     void Advance(float delta_time);
 
     Vector2 Forward();
+    Vector2 FromLocalTowWorld(Vector2 local);
 };
 
 
@@ -73,6 +74,7 @@ public:
     Module& AddModule(MODULE_TYPE type);
 
     void LaunchScript(std::string filename);
+    bool IsScriptRunning();
     void SendEvent(const boost::json::object& event_data);
 
     void Update(float delta_time) override;

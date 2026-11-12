@@ -2,6 +2,7 @@
 import concurrent.futures
 import itertools
 import json
+import os
 import queue
 import sys
 import threading
@@ -15,6 +16,13 @@ _next_id = itertools.count(1)
 _events = queue.Queue()
 _running = threading.Event()
 _started = False
+
+# Keep RPC on its own descriptor so print(), native writes and child processes
+# can all use stdout without mixing their output with protocol packets.
+sys.stdout.flush()
+_protocol_stdout = os.fdopen(os.dup(sys.stdout.fileno()), "w", encoding="utf-8")
+os.dup2(sys.stderr.fileno(), sys.stdout.fileno())
+sys.stdout = sys.stderr
 
 # Системная фигня
 
@@ -30,8 +38,8 @@ def on(name):
 def _send(message):
     raw = json.dumps(message) + "\n"
     with _send_lock:
-        sys.stdout.write(raw)
-        sys.stdout.flush()
+        _protocol_stdout.write(raw)
+        _protocol_stdout.flush()
 
 
 def command(name, module = "none", **params):
@@ -200,14 +208,26 @@ class Prop:
     def __init__(self, name):
         self.name = name
 
-    def getMaxGyro(self, timeout=2.0):
-        return _request("get_max_gyro", module=self.name, timeout=timeout)
-
     def getMaxThrottle(self, timeout=2.0):
         return _request("get_max_throttle", module=self.name, timeout=timeout)
 
     def throttle(self, value=1.0):
         command("set_throttle", module=self.name, value=value)
 
+
+class RCS:
+    name = "rcs"
+    def __init__(self, name):
+            self.name = name
+
+    def getMaxGyro(self, timeout=2.0):
+        return _request("get_max_gyro", module=self.name, timeout=timeout)
+
     def gyro(self, value=1.0):
         command("set_gyro", module=self.name, value=value)
+
+    def getThrust(self, timeout=2.0):
+        return _request("get_max_thrust", module=self.name, timeout=timeout)
+
+    def setThrust(self, value=(0, 0)):
+        command("set_thrust", module=self.name, value=value)

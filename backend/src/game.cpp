@@ -56,16 +56,17 @@ Vector2 RandomVector(float min, float max)
 
 // World
 World::World() : next_id_(0) {
-    SpawnEntity(std::make_unique<Craft>(Vector2(0)));
 
-    auto it = entities_.begin();
-    Entity& entity = *(it->second);
-    Craft& craft = static_cast<Craft&>(entity);
-    craft.AddModule(MODULE_TYPE::PROPULSION);
-    craft.LaunchScript("scripts/script.py");
-
+    for(int i = 0; i < 10; i++){
+        auto craft = std::make_unique<Craft>(Vector2(i * 30, 0));
+        craft->AddModule(MODULE_TYPE::PROPULSION);
+        craft->AddModule(MODULE_TYPE::STORAGE);
+        craft->AddModule(MODULE_TYPE::RCS);
+        SpawnEntity(std::move(craft));
+    }
 }
 World::World(std::string filename) {}
+
 void World::Update(float delta_time) {
     for(auto& entity : entities_)
     {
@@ -107,12 +108,20 @@ Module& Craft::AddModule(MODULE_TYPE type)
     {
         mdl = std::make_unique<PropulsionModule>(this);
     }
+    else if(type == MODULE_TYPE::STORAGE)
+    {
+        mdl = std::make_unique<StorageModule>(this, 20);
+    }
+    else if(type == MODULE_TYPE::RCS)
+    {
+        mdl = std::make_unique<RCSModule>(this);
+    }
     else
     {
         throw std::invalid_argument("Unknown module type");
     }
 
-    name += std::to_string(module_index_++);
+    name += "_" + std::to_string(module_index_++);
     mdl->SetName(name);
     modules_.push_back(std::move(mdl));
 
@@ -172,6 +181,13 @@ void Craft::SendEvent(const json::object& event_data)
     Send(event_data);
 }
 
+bool Craft::IsScriptRunning()
+{
+    std::lock_guard lock(send_mutex_);
+    boost::system::error_code ec;
+    return !stopping_ && process_ && process_->running(ec) && !ec;
+}
+
 void Craft::LaunchScript(std::string filename)
 {
     StopScript();
@@ -186,7 +202,7 @@ void Craft::LaunchScript(std::string filename)
             return;
         }
 
-        process_.emplace(io_, python, std::vector<std::string>{"-u", filename});
+        process_.emplace(io_, python, std::vector<std::string>{"-X", "utf8", "-u", filename});
 
         // On macOS suppress SIGPIPE only for this pipe. Elsewhere let writes
         // report broken_pipe instead of terminating the application.
@@ -222,7 +238,13 @@ void Craft::ReadPacket()
 {
     asio::async_read_until(process_->get_stdout(), read_buffer_, '\n',
         [this](boost::system::error_code ec, std::size_t) {
-            if (ec) return;
+            if (ec) {
+                // Preserve a final stdout fragment without a trailing newline.
+                if (read_buffer_.size() > 0) {
+                    std::cerr << &read_buffer_ << std::flush;
+                }
+                return;
+            }
 
             std::istream stream(&read_buffer_);
             std::string line;
@@ -234,14 +256,22 @@ void Craft::ReadPacket()
 
 void Craft::HandlePacket(const std::string& line)
 {
+    // Scripts may print before importing api, or write directly to stdout.
+    // Only API requests/commands are protocol packets; everything else is text.
+    boost::system::error_code parse_error;
+    auto parsed = json::parse(line, parse_error);
+    if (parse_error || !parsed.is_object()) {
+        std::cerr << line << '\n';
+        return;
+    }
+    const auto& msg = parsed.as_object();
+    const auto* type_value = msg.if_contains("type");
+    if (!type_value || !type_value->is_string() ||
+        (type_value->as_string() != "request" && type_value->as_string() != "command")) {
+        std::cerr << line << '\n';
+        return;
+    }
     try {
-        auto parsed = json::parse(line);
-
-        if (!parsed.is_object())
-            return;
-
-        const auto& msg = parsed.as_object();
-
         std::string module =
             json::value_to<std::string>(
                 msg.at("module")
@@ -360,7 +390,7 @@ void Craft::HandlePacket(const std::string& line)
                     }
                 }
 
-                response["result"] = json::array{
+                response["result"] = json::object{
                     {"modules", json::value_from(module_names)}
                 };
             }
@@ -467,6 +497,11 @@ Entity::Entity(Vector2 pos, Vector2 vel, float rot, float a_vel)
 Vector2 Entity::Forward()
 {
     return Vector2(std::cos(GetRotation()), std::sin(GetRotation()));
+}
+
+Vector2 Entity::FromLocalTowWorld(Vector2 local)
+{
+    return local.Rotated(GetRotation());
 }
 
 std::size_t Entity::GetId() const

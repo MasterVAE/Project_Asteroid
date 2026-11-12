@@ -4,6 +4,10 @@ import time
 import api as ship
 
 
+@ship.on("console_message")
+def console_message(message):
+    print(f"Console: {message}", file=sys.stderr)
+
 @ship.on("enemy_detected")
 def enemy_detected(event):
     # Получаем позицию прямо из обработчика события
@@ -15,18 +19,21 @@ def enemy_detected(event):
     )
 
 
+
+
 ship.start()
 modules = ship.getModules()
-print(modules, file=sys.stderr)
 
-
-# Независимая программа корабля
 while ship.is_running():
     try:
 
-        prop = ship.Prop("prop0")
+        prop = ship.Prop("prop_0")
         prop.throttle(1)
-        prop.gyro(1)
+
+        rcs = ship.RCS("rcs_2")
+        rcs.gyro(0)
+
+        rcs.setThrust((-1, 0))
 
 
     except (TimeoutError, RuntimeError) as error:

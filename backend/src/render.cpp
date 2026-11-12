@@ -158,6 +158,12 @@ struct InterfaceState
     sf::String script_path;
     std::size_t cursor = 0;
     bool editing = false;
+    sf::String console_input;
+    std::size_t console_cursor = 0;
+    bool console_editing = false;
+    std::vector<sf::String> console_history;
+    std::size_t history_index = 0;
+    sf::String console_draft;
     // Release the font's GPU textures before closing the window, rather than
     // during static destruction after SFML's graphics context has shut down.
     std::optional<sf::Font> font;
@@ -177,6 +183,7 @@ void CloseWindow(sf::RenderWindow& window)
 {
     auto& ui = Interface();
     ui.editing = false;
+    ui.console_editing = false;
     ui.selected.reset();
     ui.font.reset();
     window.close();
@@ -207,6 +214,7 @@ void FollowSelectedEntity(sf::RenderWindow& window, World* world)
 void SelectEntity(sf::RenderWindow& window, World* world, std::optional<std::size_t> selected)
 {
     auto& ui = Interface();
+    ui.console_editing = false;
     if (selected != ui.selected) ui.script_path.clear();
     ui.selected = selected;
     ui.cursor = ui.script_path.getSize();
@@ -254,6 +262,91 @@ sf::FloatRect InputBounds(const sf::RenderWindow& window)
             {std::max(1.0f, static_cast<float>(window.getSize().x) - left - 12.0f), 30.0f}};
 }
 
+sf::FloatRect ConsoleInputBounds(const sf::RenderWindow& window)
+{
+    return {{8.0f, std::max(LogTop(window), static_cast<float>(window.getSize().y) - 36.0f)},
+            {std::max(1.0f, static_cast<float>(window.getSize().x) - 16.0f), 28.0f}};
+}
+
+Craft* ConsoleTarget(World* world)
+{
+    if (Interface().selected) return dynamic_cast<Craft*>(SelectedEntity(world));
+    Craft* target = nullptr;
+    for (const auto& entry : world->GetEntities()) {
+        if (auto* craft = dynamic_cast<Craft*>(entry.second.get())) {
+            if (target) return nullptr;
+            target = craft;
+        }
+    }
+    return target;
+}
+
+void SubmitConsole(World* world)
+{
+    auto& ui = Interface();
+    if (ui.console_input.isEmpty()) return;
+    auto* craft = ConsoleTarget(world);
+    if (!craft) {
+        std::cerr << "Console: select a craft to send a command\n";
+        return;
+    }
+    if (!craft->IsScriptRunning()) {
+        std::cerr << "Console: this craft has no running script\n";
+        return;
+    }
+    const auto utf8 = ui.console_input.toUtf8();
+    const std::string message(utf8.begin(), utf8.end());
+    std::cerr << "> " << message << '\n';
+    craft->SendEvent({{"type", "event"}, {"name", "console_message"}, {"data", message}});
+    if (ui.console_history.empty() || ui.console_history.back() != ui.console_input)
+        ui.console_history.push_back(ui.console_input);
+    ui.history_index = ui.console_history.size();
+    ui.console_draft.clear();
+    ui.console_input.clear();
+    ui.console_cursor = 0;
+    ui.log_scroll = 0;
+}
+
+void EditInput(const sf::Event::KeyPressed& key, sf::String& value, std::size_t& cursor)
+{
+    if ((key.control || key.system) && key.code == sf::Keyboard::Key::V) {
+        sf::String pasted;
+        for (const auto character : sf::Clipboard::getString()) {
+            if (character >= U' ' && character != 127) pasted += sf::String(character);
+        }
+        value.insert(cursor, pasted);
+        cursor += pasted.getSize();
+    }
+    else if (key.code == sf::Keyboard::Key::Left && cursor > 0) --cursor;
+    else if (key.code == sf::Keyboard::Key::Right && cursor < value.getSize()) ++cursor;
+    else if (key.code == sf::Keyboard::Key::Home) cursor = 0;
+    else if (key.code == sf::Keyboard::Key::End) cursor = value.getSize();
+    else if (key.code == sf::Keyboard::Key::Delete && cursor < value.getSize())
+        value.erase(cursor, 1);
+}
+
+void DrawInput(sf::RenderWindow& window, const sf::FloatRect& bounds, const sf::String& value,
+               std::size_t cursor, bool editing, sf::Color color)
+{
+    sf::String visible = value;
+    if (editing) visible.insert(cursor, "|");
+    sf::Text input(*Interface().font, visible, text_size);
+    std::size_t first = 0;
+    while (first < cursor &&
+           input.findCharacterPos(cursor - first + (editing ? 1 : 0)).x > bounds.size.x - 16.0f) {
+        visible.erase(0, 1);
+        ++first;
+        input.setString(visible);
+    }
+    while (!visible.isEmpty() && input.getLocalBounds().size.x > bounds.size.x - 16.0f) {
+        visible.erase(visible.getSize() - 1, 1);
+        input.setString(visible);
+    }
+    input.setPosition(bounds.position + sf::Vector2f(8.0f, 5.0f));
+    input.setFillColor(color);
+    window.draw(input);
+}
+
 void LoadInterfaceFont()
 {
     auto& ui = Interface();
@@ -268,7 +361,7 @@ void LoadInterfaceFont()
         }
     }
     ui.font.reset();
-    std::cerr << "Cannot load a system font for the script field and stderr log\n";
+    std::cerr << "Cannot load a system font for the script field and console\n";
 }
 
 void DrawInterface(sf::RenderWindow& window, World* world)
@@ -318,29 +411,17 @@ void DrawInterface(sf::RenderWindow& window, World* world)
                   (craft ? " | Script path (Enter to launch)" : " | This entity cannot run scripts"),
               {bounds.position.x, 12.0f}, sf::Color::White);
         panel(bounds, ui.editing ? sf::Color(46, 61, 75) : sf::Color(35, 40, 48));
-        // Keep the caret and the end of long paths inside the field.
-        sf::String visible = ui.script_path;
-        if (ui.editing) visible.insert(ui.cursor, "|");
-        sf::Text input(*ui.font, visible, text_size);
-        std::size_t first = 0;
-        while (first < ui.cursor &&
-               input.findCharacterPos(ui.cursor - first + (ui.editing ? 1 : 0)).x > bounds.size.x - 16.0f) {
-            visible.erase(0, 1);
-            ++first;
-            input.setString(visible);
-        }
-        while (!visible.isEmpty() && input.getLocalBounds().size.x > bounds.size.x - 16.0f) {
-            visible.erase(visible.getSize() - 1, 1);
-            input.setString(visible);
-        }
-        input.setPosition(bounds.position + sf::Vector2f(8.0f, 5.0f));
-        input.setFillColor(craft ? sf::Color::White : sf::Color(140, 140, 140));
-        window.draw(input);
+        DrawInput(window, bounds, ui.script_path, ui.cursor, ui.editing,
+                  craft ? sf::Color::White : sf::Color(140, 140, 140));
     }
 
     const float top = LogTop(window);
     panel({{0.0f, top}, {size.x, size.y - top}}, sf::Color(18, 20, 25, 250));
-    label(stderr_log.IsActive() ? "stderr | Mouse wheel: scroll" : "stderr capture failed",
+    const auto* target = ConsoleTarget(world);
+    const std::string console_title = target ? "Console -> Craft #" + std::to_string(target->GetId())
+                                             : "Console | Select a craft";
+    label(stderr_log.IsActive() ? console_title + " | Enter: send | Up/Down: history"
+                               : "Console capture failed",
           {12.0f, top + 6.0f}, sf::Color(180, 190, 205));
     const auto columns = static_cast<std::size_t>(std::max(1.0f,
         (size.x - 24.0f) / ui.font->getGlyph(U'M', text_size, false).advance));
@@ -359,13 +440,22 @@ void DrawInterface(sf::RenderWindow& window, World* world)
         if (ui.log_scroll > 0 && ui.log_rows.size() > old_rows)
             ui.log_scroll += ui.log_rows.size() - old_rows;
     }
-    const auto visible_rows = static_cast<std::size_t>(std::max(0.0f, (size.y - top - 32.0f) / line_height));
+    const auto console_bounds = ConsoleInputBounds(window);
+    const auto visible_rows = static_cast<std::size_t>(std::max(0.0f,
+        (console_bounds.position.y - top - 32.0f) / line_height));
     const auto max_scroll = ui.log_rows.size() > visible_rows ? ui.log_rows.size() - visible_rows : 0;
     ui.log_scroll = std::min(ui.log_scroll, max_scroll);
     const auto end = ui.log_rows.size() - ui.log_scroll;
     const auto begin = end > visible_rows ? end - visible_rows : 0;
     for (auto row = begin; row < end; ++row)
-        label(ui.log_rows[row], {12.0f, top + 29.0f + (row - begin) * line_height}, sf::Color(235, 190, 180));
+        label(ui.log_rows[row], {12.0f, top + 29.0f + (row - begin) * line_height}, sf::Color(220, 225, 235));
+    panel(console_bounds, ui.console_editing ? sf::Color(46, 61, 75) : sf::Color(35, 40, 48));
+    if (ui.console_input.isEmpty() && !ui.console_editing)
+        label("Click here to type a command", console_bounds.position + sf::Vector2f(8.0f, 5.0f),
+              sf::Color(140, 150, 165));
+    else
+        DrawInput(window, console_bounds, ui.console_input, ui.console_cursor, ui.console_editing,
+                  sf::Color::White);
     window.setView(world_view);
 }
 } // namespace
@@ -402,14 +492,18 @@ void HandleEvents(sf::RenderWindow& window, World* world)
         }
         else if (event->is<sf::Event::FocusLost>()) {
             ui.editing = false;
+            ui.console_editing = false;
         }
         else if (const auto* mouse = event->getIf<sf::Event::MouseButtonPressed>()) {
             if (mouse->button != sf::Mouse::Button::Left) continue;
             const auto point = sf::Vector2f(mouse->position);
             if (point.y >= LogTop(window)) {
                 ui.editing = false;
+                ui.console_editing = true;
+                ui.console_cursor = ui.console_input.getSize();
                 continue;
             }
+            ui.console_editing = false;
             if (point.x < SidebarWidth(window)) {
                 ui.editing = false;
                 const auto ids = EntityIds(world);
@@ -457,8 +551,22 @@ void HandleEvents(sf::RenderWindow& window, World* world)
         }
         else if (const auto* key = event->getIf<sf::Event::KeyPressed>()) {
             if (key->code == sf::Keyboard::Key::Escape) {
+                if (!ui.console_editing) ui.selected.reset();
+                ui.console_editing = false;
                 ui.editing = false;
-                ui.selected.reset();
+            }
+            else if (ui.console_editing) {
+                if (key->code == sf::Keyboard::Key::Enter) SubmitConsole(world);
+                else if (key->code == sf::Keyboard::Key::Up || key->code == sf::Keyboard::Key::Down) {
+                    if (ui.history_index == ui.console_history.size()) ui.console_draft = ui.console_input;
+                    if (key->code == sf::Keyboard::Key::Up && ui.history_index > 0) --ui.history_index;
+                    if (key->code == sf::Keyboard::Key::Down && ui.history_index < ui.console_history.size())
+                        ++ui.history_index;
+                    ui.console_input = ui.history_index < ui.console_history.size()
+                        ? ui.console_history[ui.history_index] : ui.console_draft;
+                    ui.console_cursor = ui.console_input.getSize();
+                }
+                else EditInput(*key, ui.console_input, ui.console_cursor);
             }
             else if (ui.editing) {
                 if (key->code == sf::Keyboard::Key::Enter && !ui.script_path.isEmpty()) {
@@ -467,34 +575,23 @@ void HandleEvents(sf::RenderWindow& window, World* world)
                         craft->LaunchScript(std::string(utf8.begin(), utf8.end()));
                     }
                 }
-                else if ((key->control || key->system) && key->code == sf::Keyboard::Key::V) {
-                    sf::String pasted;
-                    for (const auto character : sf::Clipboard::getString()) {
-                        if (character >= U' ' && character != 127) pasted += sf::String(character);
-                    }
-                    ui.script_path.insert(ui.cursor, pasted);
-                    ui.cursor += pasted.getSize();
-                }
-                else if (key->code == sf::Keyboard::Key::Left && ui.cursor > 0) --ui.cursor;
-                else if (key->code == sf::Keyboard::Key::Right && ui.cursor < ui.script_path.getSize()) ++ui.cursor;
-                else if (key->code == sf::Keyboard::Key::Home) ui.cursor = 0;
-                else if (key->code == sf::Keyboard::Key::End) ui.cursor = ui.script_path.getSize();
-                else if (key->code == sf::Keyboard::Key::Delete && ui.cursor < ui.script_path.getSize())
-                    ui.script_path.erase(ui.cursor, 1);
+                else EditInput(*key, ui.script_path, ui.cursor);
             }
         }
         else if (const auto* text = event->getIf<sf::Event::TextEntered>()) {
-            if (!ui.editing) continue;
+            if (!ui.editing && !ui.console_editing) continue;
+            auto& value = ui.console_editing ? ui.console_input : ui.script_path;
+            auto& cursor = ui.console_editing ? ui.console_cursor : ui.cursor;
             if (text->unicode == U'\b') {
-                if (ui.cursor > 0) ui.script_path.erase(--ui.cursor, 1);
+                if (cursor > 0) value.erase(--cursor, 1);
             }
             else if (text->unicode >= U' ' && text->unicode != 127) {
-                ui.script_path.insert(ui.cursor++, sf::String(text->unicode));
+                value.insert(cursor++, sf::String(text->unicode));
             }
         }
     }
 
-    if (!window.isOpen() || !window.hasFocus() || ui.editing || ui.selected) {
+    if (!window.isOpen() || !window.hasFocus() || ui.editing || ui.console_editing || ui.selected) {
         return;
     }
 
