@@ -6,6 +6,6 @@
 
 #include "game.hpp"
 
-sf::RenderWindow CreateWindow();
+sf::RenderWindow CreateGameWindow();
 void HandleEvents(sf::RenderWindow& window, World* world);
 void Render(sf::RenderWindow& window, World* world);

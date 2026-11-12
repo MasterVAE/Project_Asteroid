@@ -1,41 +1,64 @@
-CXX = c++
-CXXFLAGS = -std=c++17 -Wall -Wextra
+.DEFAULT_GOAL := all
 
-# Автоматически узнаем пути к SFML и Boost из Homebrew
-SFML_PREFIX := $(shell brew --prefix sfml)
-BOOST_PREFIX := $(shell brew --prefix boost)
+CMAKE ?= cmake
+BUILD_DIR ?= build/release
+CONFIG ?= Release
+FETCH_DEPS ?= OFF
+SANITIZERS ?= OFF
+CMAKE_ARGS ?=
+JOBS ?= 4
+PREFIX ?= $(CURDIR)/dist/native
 
-# Добавляем пути к заголовочным файлам SFML, Boost и локальным папкам
-CPPFLAGS = -Iinclude -Ibackend/include -I$(SFML_PREFIX)/include -I$(BOOST_PREFIX)/include
+.PHONY: all release configure build run debug run-debug sanitize run-sanitize standalone install package clean clean-all windows windows-local help
+all: build
+release: build
 
-# Указываем пути к скомпилированным библиотекам и модули SFML + Boost
-LDFLAGS = -L$(SFML_PREFIX)/lib -L$(BOOST_PREFIX)/lib
-LDLIBS = -lsfml-graphics -lsfml-window -lsfml-system -lboost_filesystem -lboost_json -lboost_process
+configure:
+	$(CMAKE) -S . -B "$(BUILD_DIR)" -DCMAKE_BUILD_TYPE=$(CONFIG) -DASTEROID_FETCH_DEPENDENCIES=$(FETCH_DEPS) -DASTEROID_SANITIZERS=$(SANITIZERS) $(CMAKE_ARGS)
 
-TARGET = app
-DEBUG_TARGET = app-debug
-DEBUG_FLAGS = -g -O1 -fno-omit-frame-pointer -fno-optimize-sibling-calls -fsanitize=address,undefined -fno-sanitize-recover=all
-SOURCES = $(wildcard backend/src/*.cpp)
-HEADERS = $(wildcard backend/include/*.h backend/include/*.hpp include/*.h include/*.hpp)
+build: configure
+	$(CMAKE) --build "$(BUILD_DIR)" --config $(CONFIG) --parallel $(JOBS)
 
-.PHONY: all run debug run-debug clean
+run: build
+	$(CMAKE) --build "$(BUILD_DIR)" --config $(CONFIG) --target run
 
-all: $(TARGET)
+debug:
+	$(MAKE) build BUILD_DIR=build/debug CONFIG=Debug
 
-run: all
-	./$(TARGET)
+run-debug:
+	$(MAKE) run BUILD_DIR=build/debug CONFIG=Debug
 
-debug: $(DEBUG_TARGET)
+sanitize:
+	$(MAKE) build BUILD_DIR=build/sanitize CONFIG=Debug SANITIZERS=ON
 
-run-debug: debug
-	UBSAN_OPTIONS=print_stacktrace=1 ./$(DEBUG_TARGET)
+run-sanitize:
+	UBSAN_OPTIONS=print_stacktrace=1 $(MAKE) run BUILD_DIR=build/sanitize CONFIG=Debug SANITIZERS=ON
 
-$(TARGET): $(SOURCES) $(HEADERS) Makefile
-	$(CXX) $(CPPFLAGS) $(CXXFLAGS) $(SOURCES) $(LDFLAGS) $(LDLIBS) -o $@
+standalone:
+	$(MAKE) build BUILD_DIR=build/standalone FETCH_DEPS=ON
 
-$(DEBUG_TARGET): $(SOURCES) $(HEADERS) Makefile
-	$(CXX) $(CPPFLAGS) $(CXXFLAGS) $(DEBUG_FLAGS) $(SOURCES) $(LDFLAGS) $(LDLIBS) -o $@
+install: build
+	$(CMAKE) --install "$(BUILD_DIR)" --config $(CONFIG) --prefix "$(PREFIX)" --component Runtime
+
+package: build
+	$(CMAKE) --build "$(BUILD_DIR)" --config $(CONFIG) --target package
+
+# Build Windows x64 using an installed MinGW-w64 toolchain.
+windows:
+	$(CMAKE) --preset windows-mingw $(CMAKE_ARGS)
+	$(CMAKE) --build --preset windows-mingw --parallel $(JOBS)
+
+windows-local: windows
 
 clean:
-	rm -f $(TARGET) $(DEBUG_TARGET)
-	rm -rf $(DEBUG_TARGET).dSYM
+	$(CMAKE) --build "$(BUILD_DIR)" --config $(CONFIG) --target clean
+
+clean-all:
+	$(CMAKE) -E rm -rf build
+
+help:
+	@echo "make [all|run|debug|run-debug|sanitize|run-sanitize|standalone]"
+	@echo "make [install|package|clean] BUILD_DIR=build/release CONFIG=Release"
+	@echo "make windows                     Windows x64 via installed MinGW"
+	@echo "make windows-local               Alias for make windows"
+	@echo "Options: JOBS=4 FETCH_DEPS=ON CMAKE_ARGS='...' PREFIX=..."

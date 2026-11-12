@@ -1,0 +1,42 @@
+{
+  "version": 5,
+  "cmakeMinimumRequired": {"major": 3, "minor": 24, "patch": 0},
+  "configurePresets": [
+    {
+      "name": "release",
+      "displayName": "Native Release (installed dependencies)",
+      "binaryDir": "${sourceDir}/build/release",
+      "cacheVariables": {"CMAKE_BUILD_TYPE": "Release"}
+    },
+    {
+      "name": "debug", "inherits": "release",
+      "binaryDir": "${sourceDir}/build/debug",
+      "cacheVariables": {"CMAKE_BUILD_TYPE": "Debug"}
+    },
+    {
+      "name": "sanitize", "inherits": "debug",
+      "binaryDir": "${sourceDir}/build/sanitize",
+      "cacheVariables": {"ASTEROID_SANITIZERS": "ON"},
+      "condition": {"type": "notEquals", "lhs": "${hostSystemName}", "rhs": "Windows"}
+    },
+    {
+      "name": "standalone", "inherits": "release",
+      "displayName": "Native Release (build pinned dependencies)",
+      "binaryDir": "${sourceDir}/build/standalone",
+      "cacheVariables": {"ASTEROID_FETCH_DEPENDENCIES": "ON"}
+    },
+    {
+      "name": "windows-mingw", "inherits": "standalone",
+      "binaryDir": "${sourceDir}/build/windows-mingw",
+      "toolchainFile": "${sourceDir}/cmake/toolchains/windows-mingw-x64.cmake",
+      "condition": {"type": "notEquals", "lhs": "${hostSystemName}", "rhs": "Windows"}
+    }
+  ],
+  "buildPresets": [
+    {"name": "release", "configurePreset": "release", "configuration": "Release"},
+    {"name": "debug", "configurePreset": "debug", "configuration": "Debug"},
+    {"name": "sanitize", "configurePreset": "sanitize", "configuration": "Debug"},
+    {"name": "standalone", "configurePreset": "standalone", "configuration": "Release"},
+    {"name": "windows-mingw", "configurePreset": "windows-mingw", "configuration": "Release"}
+  ]
+}

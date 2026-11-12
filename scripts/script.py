@@ -23,8 +23,10 @@ print(modules, file=sys.stderr)
 # Независимая программа корабля
 while ship.is_running():
     try:
-        #ship.throttle(1)
-        ship.gyro(1)
+
+        prop = ship.Prop("prop0")
+        prop.throttle(1)
+        prop.gyro(1)
 
 
     except (TimeoutError, RuntimeError) as error:

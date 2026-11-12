@@ -12,6 +12,7 @@
 #include <boost/json.hpp>
 #include <vector>
 #include <cmath>
+#include <deque>
 
 #include "vector.hpp"
 #include "modules.hpp"
@@ -20,6 +21,7 @@
 class Entity
 {
 private:
+    mutable std::mutex entity_mutex_;
     std::size_t id_ = 0;
     Vector2 position_;
     Vector2 velocity_;
@@ -28,34 +30,31 @@ private:
 
 public:
     // ID
-    std::size_t GetId() const { return id_; }
-    void SetId(std::size_t id) { id_ = id; }
+    std::size_t GetId() const;
+    void SetId(std::size_t id);
 
     // Position
-    Vector2 GetPosition() const { return position_; }
-    void SetPosition(const Vector2& pos) { position_ = pos; }
+    Vector2 GetPosition() const;
+    void SetPosition(const Vector2& pos);
 
     // Velocity
-    Vector2 GetVelocity() const { return velocity_; }
-    void SetVelocity(const Vector2& vel) { velocity_ = vel; }
+    Vector2 GetVelocity() const;
+    void SetVelocity(const Vector2& vel);
 
     // Rotation
-    float GetRotation() const { return rotation_; }
-    void SetRotation(float rotation) { 
-        rotation_ = rotation; 
-        if(rotation_ < 0) rotation_ += 2 * M_PI;
-        else if(rotation_ >= 2 * M_PI) rotation_ -= 2 * M_PI;
-    }
+    float GetRotation() const;
+    void SetRotation(float rotation);
 
     // Angular velocity
-    float GetAngularVelocity() const { return angular_velocity_; }
-    void SetAngularVelocity(float a_vel) { angular_velocity_ = a_vel; }
+    float GetAngularVelocity() const;
+    void SetAngularVelocity(float a_vel);
 
     Entity();
     Entity(Vector2 pos, Vector2 vel, float rot, float a_vel);
     virtual ~Entity() = default;
 
     virtual void Update(float delta_time) {};
+    void Advance(float delta_time);
 
     Vector2 Forward();
 };
@@ -70,7 +69,7 @@ public:
     Craft(Vector2 pos);
     ~Craft() override;
 
-    std::vector<std::unique_ptr<Module>>& GetModules() { return modules_; }
+    std::vector<Module*> GetModules();
     Module& AddModule(MODULE_TYPE type);
 
     void LaunchScript(std::string filename);
@@ -88,9 +87,18 @@ private:
 
     void Send(const boost::json::object& message);
     void StopScript();
+    void ReadPacket();
+    void HandlePacket(const std::string& line);
+    void QueuePacket(std::string packet);
+    void WritePacket();
 
     boost::asio::io_context io_;
     std::optional<boost::process::v2::popen> process_;
+    std::optional<boost::asio::executor_work_guard<boost::asio::io_context::executor_type>> work_;
+    boost::asio::streambuf read_buffer_;
+    std::deque<std::string> outgoing_;
+    bool stopping_ = true; // Protected by send_mutex_.
+    bool close_stdin_when_idle_ = false; // Accessed only by the I/O thread.
 
     std::thread reader_;
 };

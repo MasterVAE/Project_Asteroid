@@ -5,3 +5,6 @@ python_api.txt
 app-debug.dSYM
 app-debug
 scripts/__pycache__
+/build/
+/dist/
+/CMakeUserPresets.json

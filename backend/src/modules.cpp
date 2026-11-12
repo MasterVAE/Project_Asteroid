@@ -6,8 +6,21 @@
 
 void PropulsionModule::Update(float delta_time)
 {
+    std::lock_guard lock(parent_->state_mutex_);
     parent_->SetVelocity(parent_->GetVelocity() + max_thrust_ * throttle_ * delta_time * parent_->Forward());
     parent_->SetAngularVelocity(gyro_ * max_gyro_);
+}
+
+void PropulsionModule::SetThrottle(float throttle)
+{
+    std::lock_guard lock(parent_->state_mutex_);
+    if (throttle >= 0 && throttle <= 1) throttle_ = throttle;
+}
+
+void PropulsionModule::SetGyro(float gyro)
+{
+    std::lock_guard lock(parent_->state_mutex_);
+    if (gyro >= -1 && gyro <= 1) gyro_ = gyro;
 }
 
 boost::json::object PropulsionModule::Handle(boost::json::object request)
@@ -35,7 +48,6 @@ boost::json::object PropulsionModule::Handle(boost::json::object request)
         double value = boost::json::value_to<double>(request.at("value"));
 
         if (std::isfinite(value)) {
-            std::lock_guard lock(parent_->state_mutex_);
             SetThrottle(value);
         }
     }
@@ -44,7 +56,6 @@ boost::json::object PropulsionModule::Handle(boost::json::object request)
         double value = boost::json::value_to<double>(request.at("value"));
 
         if (std::isfinite(value)) {
-            std::lock_guard lock(parent_->state_mutex_);
             SetGyro(value);
         }
     }

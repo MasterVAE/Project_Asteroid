@@ -1,0 +1,43 @@
+name: Build
+on: [push, pull_request, workflow_dispatch]
+
+jobs:
+  native:
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-24.04, macos-14, windows-2022]
+    runs-on: ${{ matrix.os }}
+    steps:
+      - uses: actions/checkout@v4
+      - name: Install Linux system dependencies
+        if: runner.os == 'Linux'
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y libfreetype-dev libx11-dev libxrandr-dev libxcursor-dev libxi-dev libudev-dev libgl1-mesa-dev
+      - run: cmake --preset standalone
+      - run: cmake --build --preset standalone --parallel 4
+      - run: cmake --build build/standalone --config Release --target package
+      - uses: actions/upload-artifact@v4
+        with:
+          name: ProjectAsteroid-${{ matrix.os }}
+          path: |
+            build/standalone/packages/*.zip
+            build/standalone/packages/*.tar.gz
+          if-no-files-found: error
+
+  windows-cross:
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v4
+      - name: Install MinGW-w64
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y gcc-mingw-w64-x86-64-posix g++-mingw-w64-x86-64-posix
+      - run: make windows
+      - run: cmake --build build/windows-mingw --target package
+      - uses: actions/upload-artifact@v4
+        with:
+          name: ProjectAsteroid-windows-mingw
+          path: build/windows-mingw/packages/*.zip
+          if-no-files-found: error

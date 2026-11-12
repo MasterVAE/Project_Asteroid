@@ -30,7 +30,7 @@ public:
     void SetName(std::string name) { name_ = name; }
     MODULE_TYPE GetType() { return type_; }
 
-    virtual boost::json::object Handle(boost::json::object request) {};
+    virtual boost::json::object Handle(boost::json::object request) { return {}; };
     virtual void Update(float delta_time) {};
 
 };
@@ -45,16 +45,25 @@ class PropulsionModule : public Module
 public:
     PropulsionModule(Craft* parent) : Module(parent, MODULE_TYPE::PROPULSION, "") {}
 
-    void SetThrottle(float throttle)
-    {
-        if(throttle >= 0 && throttle <= 1) throttle_ = throttle;
-    }
-    void SetGyro(float gyro)
-    {
-        if(gyro >= -1 && gyro <= 1) gyro_ = gyro;
-    }
+    void SetThrottle(float throttle);
+    void SetGyro(float gyro);
 
     void Update(float delta_time);
 
     boost::json::object Handle(boost::json::object request) override;
 };
+
+
+struct MODULE_DATA
+{
+    MODULE_TYPE type;
+    std::string name;
+    float mass; 
+};
+
+static const MODULE_DATA MODULES_DATA[] = 
+{
+    {PROPULSION, "prop", 1}
+};
+
+static const std::size_t MODULES_COUNT = sizeof(MODULE_DATA)/sizeof(MODULES_DATA[0]);

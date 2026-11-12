@@ -180,27 +180,34 @@ def getPos(timeout=2.0):
     return _request("get_position", timeout=timeout)
 
 def getVel(timeout=2.0):
-    return _request("get_veocity", timeout=timeout)
+    return _request("get_velocity", timeout=timeout)
 
 def getAngle(timeout=2.0):
     return _request("get_angle", timeout=timeout)
 
 def getAngularVelocity(timeout=2.0):
-    return _request("get_anglular_velocity", timeout=timeout)
+    return _request("get_angular_velocity", timeout=timeout)
 
 def getModules(timeout=2.0):
     return _request("get_modules", timeout=timeout)
 
-def getMaxGyro(timeout=2.0):
-    return _request("get_max_gyro", module="prop0", timeout=timeout)
 
-def getMaxThrottle(timeout=2.0):
-    return _request("get_max_throttle", module="prop0", timeout=timeout)
-
-def throttle(value=1.0):
-    command("set_throttle", module="prop0", value=value)
-
-def gyro(value=1.0):
-    command("set_gyro", module="prop0", value=value)
 
 # модули
+
+class Prop:
+    name = "prop"
+    def __init__(self, name):
+        self.name = name
+
+    def getMaxGyro(self, timeout=2.0):
+        return _request("get_max_gyro", module=self.name, timeout=timeout)
+
+    def getMaxThrottle(self, timeout=2.0):
+        return _request("get_max_throttle", module=self.name, timeout=timeout)
+
+    def throttle(self, value=1.0):
+        command("set_throttle", module=self.name, value=value)
+
+    def gyro(self, value=1.0):
+        command("set_gyro", module=self.name, value=value)
