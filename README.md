@@ -181,7 +181,7 @@ import time
 import api as ship
 
 ship.start()
-print(ship.getModules())  # {"modules": ["prop_0", "stor_1", "rcs_2"]}
+print(ship.getModules())  # ["prop_0", "stor_1", "rcs_2"]
 prop = ship.Prop("prop_0")
 rcs = ship.RCS("rcs_2")
 
@@ -203,22 +203,27 @@ finally:
 
 ### Чтение состояния
 
-Все запросы принимают `timeout=2.0` в секундах и возвращают поле `result` ответа.
+Все запросы принимают `timeout=2.0` в секундах. Python API извлекает данные
+из ответа: ID возвращается как `int`, координаты и скорость — как кортежи
+из двух `float`, скалярные величины — как `float`, имена модулей — как список строк.
 При тайм-ауте возникает `TimeoutError`, при ошибке RPC или закрытии соединения — `RuntimeError`.
 
 | Вызов | Пример результата |
 | --- | --- |
-| `ship.getId()` | `{"craft_id": 0}` |
-| `ship.getPos()` | `{"x": 50.0, "y": 50.0}` |
-| `ship.getVel()` | `{"x": 1.0, "y": 0.0}` |
-| `ship.getAngle()` | `{"angle": 1.57}` |
-| `ship.getAngularVelocity()` | `{"angular_velocity": 0.5}` |
-| `ship.getModules()` | `{"modules": ["prop_0", "stor_1", "rcs_2"]}` |
-| `prop.getMaxThrottle()` | `{"max_throttle": 10.0}` |
-| `rcs.getMaxGyro()` | `{"max_gyro": 1.0}` |
-| `rcs.getThrust()` | `{"max_thrust": 1.0}` |
+| `ship.getId()` | `0` |
+| `ship.getPos()` | `(50.0, 50.0)` |
+| `ship.getVel()` | `(1.0, 0.0)` |
+| `ship.getAngle()` | `1.57` |
+| `ship.getAngularVelocity()` | `0.5` |
+| `ship.getModules()` | `["prop_0", "stor_1", "rcs_2"]` |
+| `prop.getMaxThrottle()` | `10.0` |
+| `rcs.getMaxGyro()` | `1.0` |
+| `rcs.getThrust()` | `1.0` |
 
-Имена модулей: `ship.getModules()["modules"]`. Счётчик имён общий для всех модулей
+Координаты и скорость можно распаковать: `x, y = ship.getPos()`,
+`vx, vy = ship.getVel()`.
+
+Имена модулей: `ship.getModules()`. Счётчик имён общий для всех модулей
 одного корабля: при текущем порядке добавления получаются `prop_0`, `stor_1`,
 `rcs_2`. При другом составе или порядке добавления номера меняются.
 `ship.Prop(name)` и `ship.RCS(name)` создают обёртки для указанного имени,
@@ -236,19 +241,19 @@ finally:
 #### Prop — основной двигатель
 
 - `prop.getMaxThrottle(timeout=2.0)` возвращает максимальное ускорение:
-  `{"max_throttle": 10.0}`.
+  `10.0`.
 - `prop.throttle(value=1.0)` задаёт долю тяги от `0` до `1`;
   `0` выключает двигатель. Значения вне диапазона игнорируются.
 - Ускорение направлено вперёд по кораблю и равно `max_throttle * throttle`.
 
 #### RCS — вращение и маневровая тяга
 
-- `rcs.getMaxGyro(timeout=2.0)` возвращает `{"max_gyro": 1.0}` — максимальную
+- `rcs.getMaxGyro(timeout=2.0)` возвращает `1.0` — максимальную
   угловую скорость в рад/с.
 - `rcs.gyro(value=1.0)` задаёт долю угловой скорости от `-1` до `1`;
   `0` останавливает вращение. Значения вне диапазона игнорируются.
 - `rcs.getThrust(timeout=2.0)` возвращает **максимальное ускорение**
-  `{"max_thrust": 1.0}`.
+  `1.0`.
 - `rcs.setThrust(value=(0, 0))` принимает пару чисел `(x, y)` или список `[x, y]`.
   Это вектор доли тяги в локальных координатах корабля: X — вперёд,
   Y — влево относительно направления корабля. Например, `(-1, 0)` задаёт

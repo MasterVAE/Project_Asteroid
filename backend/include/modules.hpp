@@ -16,7 +16,8 @@ enum MODULE_TYPE
 {
     PROPULSION,
     STORAGE,
-    RCS
+    RCS,
+    DRILL
 };
 
 class Module
@@ -36,8 +37,8 @@ public:
     void SetName(std::string name) { name_ = name; }
     MODULE_TYPE GetType() { return type_; }
 
-    virtual boost::json::object Handle(boost::json::object request) { return {}; };
-    virtual void Update(float delta_time) {};
+    virtual boost::json::object Handle(boost::json::object) { return {}; };
+    virtual void Update(float) {};
 
 };
 
@@ -66,6 +67,7 @@ public:
                             : Module(parent, MODULE_TYPE::STORAGE, ""), capacity_(capacity) {}
 
     std::unordered_map<RESOURCE_TYPE, std::size_t>& GetInventory() { return inventory_; }
+    std::size_t GetCapacity() const { return capacity_; }
     std::size_t ResourceCount(RESOURCE_TYPE);
     void AddToInventory(std::unordered_map<RESOURCE_TYPE, std::size_t> add);
     void TakeFromInventory(std::unordered_map<RESOURCE_TYPE, std::size_t> take);
@@ -93,6 +95,25 @@ public:
     boost::json::object Handle(boost::json::object request) override;
 };
 
+
+class DrillModule : public Module
+{
+    float drill_cooldown_ = 0.5;
+    float timer_ = 0;
+    bool enabled_ = false;
+public:
+    DrillModule(Craft* parent) : Module(parent, MODULE_TYPE::DRILL, "") {}
+
+    void Enable();
+    void Disable();
+
+    float GetDrillCooldown() { return drill_cooldown_; }
+
+    void Update(float delta_time) override;
+
+    boost::json::object Handle(boost::json::object request) override;
+};
+
 struct MODULE_DATA
 {
     MODULE_TYPE type;
@@ -104,7 +125,8 @@ static const MODULE_DATA MODULES_DATA[] =
 {
     {PROPULSION, "prop", 1},
     {STORAGE, "stor", 1},
-    {RCS, "rcs", 1}
+    {RCS, "rcs", 1},
+    {DRILL, "drill", 1}
 };
 
 static const std::size_t MODULES_COUNT = sizeof(MODULES_DATA)/sizeof(MODULES_DATA[0]);

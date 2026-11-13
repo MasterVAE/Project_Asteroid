@@ -242,6 +242,12 @@ std::vector<std::size_t> EntityIds(World* world)
     return ids;
 }
 
+std::string EntityLabel(Entity* entity)
+{
+    return std::string(entity->GetType() == ENTITY_TYPE::ASTEROID ? "Asteroid #" : "Craft #") +
+           std::to_string(entity->GetId());
+}
+
 std::size_t VisibleEntityRows(const sf::RenderWindow& window)
 {
     return static_cast<std::size_t>(std::max(0.0f,
@@ -398,8 +404,7 @@ void DrawInterface(sf::RenderWindow& window, World* world)
         if (selected)
             panel({{4.0f, y}, {std::max(1.0f, sidebar_width - 8.0f), entity_row_height - 2.0f}},
                   sf::Color(46, 61, 75));
-        const bool craft = dynamic_cast<Craft*>(world->GetEntities().at(ids[row]).get()) != nullptr;
-        label(std::string(craft ? "Craft #" : "Entity #") + std::to_string(ids[row]),
+        label(EntityLabel(world->GetEntities().at(ids[row]).get()),
               {12.0f, y + 4.0f}, selected ? sf::Color(255, 215, 70) : sf::Color::White);
     }
 
@@ -407,7 +412,7 @@ void DrawInterface(sf::RenderWindow& window, World* world)
         const bool craft = dynamic_cast<Craft*>(entity) != nullptr;
         const auto bounds = InputBounds(window);
         panel({{sidebar_width, 0.0f}, {size.x - sidebar_width, 82.0f}}, sf::Color(20, 24, 30, 245));
-        label("Entity #" + std::to_string(*ui.selected) +
+        label(EntityLabel(entity) +
                   (craft ? " | Script path (Enter to launch)" : " | This entity cannot run scripts"),
               {bounds.position.x, 12.0f}, sf::Color::White);
         panel(bounds, ui.editing ? sf::Color(46, 61, 75) : sf::Color(35, 40, 48));
@@ -642,13 +647,38 @@ void Render(sf::RenderWindow& window, World* world)
     arrow.setPoint(2, {-8.0f, 7.0f});
     arrow.setFillColor(sf::Color::Green);
 
+    // An uneven rock silhouette, kept inside the selection circle.
+    sf::ConvexShape asteroid(8);
+    asteroid.setPoint(0, {14.0f, 0.0f});
+    asteroid.setPoint(1, {10.0f, 10.0f});
+    asteroid.setPoint(2, {1.0f, 14.0f});
+    asteroid.setPoint(3, {-10.0f, 11.0f});
+    asteroid.setPoint(4, {-14.0f, 1.0f});
+    asteroid.setPoint(5, {-10.0f, -9.0f});
+    asteroid.setPoint(6, {0.0f, -13.0f});
+    asteroid.setPoint(7, {11.0f, -8.0f});
+    asteroid.setFillColor(sf::Color(105, 100, 90));
+    asteroid.setOutlineColor(sf::Color(175, 165, 145));
+    asteroid.setOutlineThickness(1.5f);
+
     for (const auto& entity : world->GetEntities())
     {
         Vector2 pos = entity.second->GetPosition();
 
-        arrow.setPosition({pos.x, -pos.y});
-        arrow.setRotation(sf::radians(-entity.second->GetRotation()));
-        window.draw(arrow);
+        if (entity.second->GetType() == ENTITY_TYPE::ASTEROID) {
+            // Stable variation without changing geometry randomly each frame.
+            const auto id = entity.second->GetId();
+            const float scale = 0.85f + static_cast<float>(id % 4) * 0.05f;
+            asteroid.setScale({scale, scale});
+            asteroid.setPosition({pos.x, -pos.y});
+            asteroid.setRotation(sf::radians(-entity.second->GetRotation()) +
+                                 sf::degrees(static_cast<float>((id % 360) * 37 % 360)));
+            window.draw(asteroid);
+        } else {
+            arrow.setPosition({pos.x, -pos.y});
+            arrow.setRotation(sf::radians(-entity.second->GetRotation()));
+            window.draw(arrow);
+        }
     }
 
     if (auto* entity = SelectedEntity(world)) {

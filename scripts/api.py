@@ -181,23 +181,31 @@ def is_running():
 
 # Запросы
 
-def getId(timeout=2.0):
-    return _request("get_id", timeout=timeout)
+def getId(timeout=2.0) -> int:
+    """Возвращает ID корабля."""
+    return int(_request("get_id", timeout=timeout)["craft_id"])
 
-def getPos(timeout=2.0):
-    return _request("get_position", timeout=timeout)
+def getPos(timeout=2.0) -> tuple:
+    """Возвращает мировые координаты корабля как (x, y)."""
+    result = _request("get_position", timeout=timeout)
+    return float(result["x"]), float(result["y"])
 
-def getVel(timeout=2.0):
-    return _request("get_velocity", timeout=timeout)
+def getVel(timeout=2.0) -> tuple:
+    """Возвращает мировую скорость корабля как (vx, vy)."""
+    result = _request("get_velocity", timeout=timeout)
+    return float(result["x"]), float(result["y"])
 
-def getAngle(timeout=2.0):
-    return _request("get_angle", timeout=timeout)
+def getAngle(timeout=2.0) -> float:
+    """Возвращает угол корабля в радианах."""
+    return float(_request("get_angle", timeout=timeout)["angle"])
 
-def getAngularVelocity(timeout=2.0):
-    return _request("get_angular_velocity", timeout=timeout)
+def getAngularVelocity(timeout=2.0) -> float:
+    """Возвращает угловую скорость корабля в рад/с."""
+    return float(_request("get_angular_velocity", timeout=timeout)["angular_velocity"])
 
-def getModules(timeout=2.0):
-    return _request("get_modules", timeout=timeout)
+def getModules(timeout=2.0) -> list:
+    """Возвращает список имён установленных модулей."""
+    return _request("get_modules", timeout=timeout)["modules"]
 
 
 
@@ -208,8 +216,9 @@ class Prop:
     def __init__(self, name):
         self.name = name
 
-    def getMaxThrottle(self, timeout=2.0):
-        return _request("get_max_throttle", module=self.name, timeout=timeout)
+    def getMaxThrottle(self, timeout=2.0) -> float:
+        """Возвращает максимальное ускорение основного двигателя."""
+        return float(_request("get_max_throttle", module=self.name, timeout=timeout)["max_throttle"])
 
     def throttle(self, value=1.0):
         command("set_throttle", module=self.name, value=value)
@@ -220,14 +229,16 @@ class RCS:
     def __init__(self, name):
             self.name = name
 
-    def getMaxGyro(self, timeout=2.0):
-        return _request("get_max_gyro", module=self.name, timeout=timeout)
+    def getMaxGyro(self, timeout=2.0) -> float:
+        """Возвращает максимальную угловую скорость в рад/с."""
+        return float(_request("get_max_gyro", module=self.name, timeout=timeout)["max_gyro"])
 
     def gyro(self, value=1.0):
         command("set_gyro", module=self.name, value=value)
 
-    def getThrust(self, timeout=2.0):
-        return _request("get_max_thrust", module=self.name, timeout=timeout)
+    def getThrust(self, timeout=2.0) -> float:
+        """Возвращает максимальное ускорение маневровых двигателей."""
+        return float(_request("get_max_thrust", module=self.name, timeout=timeout)["max_thrust"])
 
     def setThrust(self, value=(0, 0)):
         command("set_thrust", module=self.name, value=value)

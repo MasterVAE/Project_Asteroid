@@ -4,6 +4,7 @@
 #include <memory>
 #include <string>
 #include <unordered_map>
+#include <unordered_set>
 #include <optional>
 #include <mutex>
 #include <thread>
@@ -16,7 +17,17 @@
 
 #include "vector.hpp"
 #include "modules.hpp"
+#include "resources.hpp"
 
+
+enum ENTITY_TYPE
+{
+    CRAFT,
+    ASTEROID
+};
+
+
+class World;
 
 class Entity
 {
@@ -27,8 +38,11 @@ private:
     Vector2 velocity_;
     float rotation_ = 0.0f;
     float angular_velocity_ = 0.0f;
+    ENTITY_TYPE type_;
 
 public:
+    World* world = nullptr;
+
     // ID
     std::size_t GetId() const;
     void SetId(std::size_t id);
@@ -49,11 +63,13 @@ public:
     float GetAngularVelocity() const;
     void SetAngularVelocity(float a_vel);
 
-    Entity();
-    Entity(Vector2 pos, Vector2 vel, float rot, float a_vel);
+    Entity(ENTITY_TYPE type);
+    Entity(ENTITY_TYPE type, Vector2 pos, Vector2 vel, float rot, float a_vel);
     virtual ~Entity() = default;
 
-    virtual void Update(float delta_time) {};
+    ENTITY_TYPE GetType() { return type_; }
+
+    virtual void Update(float) {};
     void Advance(float delta_time);
 
     Vector2 Forward();
@@ -106,19 +122,34 @@ private:
 };
 
 
+class Asteroid : public Entity
+{
+    std::unordered_map<RESOURCE_TYPE, std::size_t> resources_;
+public:
+    Asteroid();
+    Asteroid(Vector2 pos);
+    ~Asteroid() override = default;
 
+    std::unordered_map<RESOURCE_TYPE, std::size_t>& GetResources() { return resources_; }
+    RESOURCE_TYPE Mine();
+
+    void Update(float delta_time) override;
+};
 
 
 class World
 {
     std::size_t next_id_ = 1;
     std::unordered_map<std::size_t, std::unique_ptr<Entity>> entities_;
+    std::unordered_set<std::size_t> pending_destroy_;
+    bool updating_ = false;
 
 public:
     World();
     World(std::string filename);
 
     void SpawnEntity(std::unique_ptr<Entity> entity);
+    void DestroyEntity(Entity* entity);
 
     std::unordered_map<std::size_t, std::unique_ptr<Entity>>& GetEntities() { return entities_; }
 

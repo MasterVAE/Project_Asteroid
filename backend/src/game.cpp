@@ -14,6 +14,7 @@
 #include <cmath>
 #include <iostream>
 #include <mutex>
+#include <stdexcept>
 #include <string>
 #include <thread>
 #include <utility>
@@ -62,32 +63,112 @@ World::World() : next_id_(0) {
         craft->AddModule(MODULE_TYPE::PROPULSION);
         craft->AddModule(MODULE_TYPE::STORAGE);
         craft->AddModule(MODULE_TYPE::RCS);
+        craft->AddModule(MODULE_TYPE::DRILL);
         SpawnEntity(std::move(craft));
     }
+
+    for(int i = 0; i < 50; i++)
+    {
+        SpawnEntity(std::make_unique<Asteroid>(RandomVector(-1000, 1000)));
+    }
 }
-World::World(std::string filename) {}
+World::World(std::string /*filename*/) {}
 
 void World::Update(float delta_time) {
-    for(auto& entity : entities_)
+    updating_ = true;
+    try
     {
-        entity.second->Advance(delta_time);
-        entity.second->Update(delta_time);
+        for(auto& entity : entities_)
+        {
+            if (pending_destroy_.count(entity.first) != 0)
+                continue;
+
+            entity.second->Advance(delta_time);
+            entity.second->Update(delta_time);
+        }
     }
+    catch (...)
+    {
+        updating_ = false;
+        throw;
+    }
+    updating_ = false;
+
+    for (const auto id : pending_destroy_)
+        entities_.erase(id);
+    pending_destroy_.clear();
 }
 
 void World::SpawnEntity(std::unique_ptr<Entity> entity)
 {
     std::size_t id = next_id_++;
     entity->SetId(id);
+    entity->world = this;
     entities_.emplace(id, std::move(entity));
 }
 
+void World::DestroyEntity(Entity* entity)
+{
+    if (entity == nullptr)
+        return;
 
+    const auto it = entities_.find(entity->GetId());
+    if (it == entities_.end() || it->second.get() != entity)
+        return;
+
+    // Keep entities and iterators alive until the current update finishes.
+    if (updating_)
+        pending_destroy_.insert(it->first);
+    else
+        entities_.erase(it);
+}
+
+
+// Asteroid
+Asteroid::Asteroid() : Entity(ENTITY_TYPE::ASTEROID) {}
+Asteroid::Asteroid(Vector2 pos) : Entity(ENTITY_TYPE::ASTEROID, pos, Vector2(0), 0, 0) {}
+
+void Asteroid::Update(float) {}
+
+RESOURCE_TYPE Asteroid::Mine()
+{
+    std::size_t resource_count = 0;
+    for (const auto& resource : resources_)
+    {
+        resource_count += resource.second;
+    }
+
+    static thread_local std::mt19937 gen(std::random_device{}());
+    std::uniform_int_distribution<std::size_t> dist(0, resource_count - 1);
+    std::size_t index = dist(gen);
+
+    auto resource = resources_.begin();
+    while (index >= resource->second)
+    {
+        index -= resource->second;
+        ++resource;
+    }
+
+    const RESOURCE_TYPE type = resource->first;
+    if (--resource->second == 0)
+    {
+        resources_.erase(resource);
+    }
+
+    resource_count--;
+    if (resource_count == 0) 
+    { 
+        world->DestroyEntity(this); 
+    }
+
+
+    return type;
+}
 
 
 // Craft
-Craft::Craft() : Entity(), module_index_(0) {}
-Craft::Craft(Vector2 pos) : Entity(pos, Vector2(0), 0, 0), module_index_(0) {}
+Craft::Craft() : Entity(ENTITY_TYPE::CRAFT), module_index_(0) {}
+Craft::Craft(Vector2 pos) : Entity(ENTITY_TYPE::CRAFT, pos, Vector2(0), 0, 0), module_index_(0) {}
 
 Module& Craft::AddModule(MODULE_TYPE type)
 {
@@ -115,6 +196,10 @@ Module& Craft::AddModule(MODULE_TYPE type)
     else if(type == MODULE_TYPE::RCS)
     {
         mdl = std::make_unique<RCSModule>(this);
+    }
+    else if(type == MODULE_TYPE::DRILL)
+    {
+        mdl = std::make_unique<DrillModule>(this);
     }
     else
     {
@@ -490,9 +575,9 @@ void Craft::Update(float delta_time)
 
 // Entity
 
-Entity::Entity() : position_(0), velocity_(0), rotation_(0), angular_velocity_(0) {}
-Entity::Entity(Vector2 pos, Vector2 vel, float rot, float a_vel)
-                    : position_(pos), velocity_(vel), rotation_(rot), angular_velocity_(a_vel) {}
+Entity::Entity(ENTITY_TYPE type) : type_(type), position_(0), velocity_(0), rotation_(0), angular_velocity_(0) {}
+Entity::Entity(ENTITY_TYPE type, Vector2 pos, Vector2 vel, float rot, float a_vel)
+                    : type_(type), position_(pos), velocity_(vel), rotation_(rot), angular_velocity_(a_vel) {}
 
 Vector2 Entity::Forward()
 {
@@ -571,6 +656,6 @@ void Entity::Advance(float delta_time)
     std::lock_guard lock(entity_mutex_);
     position_ += velocity_ * delta_time;
     rotation_ += angular_velocity_ * delta_time;
-    if (rotation_ < 0) rotation_ += 2 * pi;
-    else if (rotation_ >= 2 * pi) rotation_ -= 2 * pi;
+    while (rotation_ < 0) rotation_ += 2 * pi;
+    while (rotation_ >= 2 * pi) rotation_ -= 2 * pi;
 }
