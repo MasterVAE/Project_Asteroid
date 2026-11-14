@@ -4,6 +4,7 @@
 #include <cerrno>
 #include <cmath>
 #include <cstdio>
+#include <deque>
 #include <filesystem>
 #include <string>
 #include <vector>
@@ -25,6 +26,9 @@ constexpr unsigned int text_size = 14;
 constexpr float line_height = 19.0f;
 constexpr float entity_list_top = 40.0f;
 constexpr float entity_row_height = 28.0f;
+constexpr std::size_t max_log_lines = 1000;
+constexpr std::size_t max_log_line_bytes = 4096;
+constexpr std::size_t max_log_file_bytes = 4 * 1024 * 1024;
 
 // A file captures C/C++ stderr and inherited Python stderr without pipe
 // backpressure. The reader must not change the offset shared by the writers.
@@ -51,8 +55,20 @@ public:
         if (original_ < 0) return;
         ::SetHandleInformation(reinterpret_cast<HANDLE>(::_get_osfhandle(original_)), HANDLE_FLAG_INHERIT, 0);
         ::SetHandleInformation(reinterpret_cast<HANDLE>(::_get_osfhandle(::_fileno(file_))), HANDLE_FLAG_INHERIT, 0);
+        // Append-only writes remain valid when the capture file is truncated.
+        const auto append_handle = ::CreateFileW(filename, FILE_APPEND_DATA,
+            FILE_SHARE_READ | FILE_SHARE_WRITE, nullptr, OPEN_EXISTING, FILE_ATTRIBUTE_NORMAL, nullptr);
+        if (append_handle == INVALID_HANDLE_VALUE) return;
+        const int append_fd = ::_open_osfhandle(reinterpret_cast<intptr_t>(append_handle),
+                                               _O_WRONLY | _O_BINARY);
+        if (append_fd < 0) {
+            ::CloseHandle(append_handle);
+            return;
+        }
         std::fflush(stderr);
-        if (::_dup2(::_fileno(file_), 2) < 0) return;
+        const int redirected = ::_dup2(append_fd, 2);
+        ::_close(append_fd);
+        if (redirected < 0) return;
         original_mode_ = ::_setmode(2, _O_BINARY);
         const auto handle = reinterpret_cast<HANDLE>(::_get_osfhandle(2));
         ::SetHandleInformation(handle, HANDLE_FLAG_INHERIT, HANDLE_FLAG_INHERIT);
@@ -61,6 +77,8 @@ public:
 #else
         file_ = std::tmpfile();
         if (!file_) return;
+        const int flags = ::fcntl(::fileno(file_), F_GETFL);
+        if (flags < 0 || ::fcntl(::fileno(file_), F_SETFL, flags | O_APPEND) < 0) return;
         original_ = ::dup(STDERR_FILENO);
         if (original_ < 0) return;
         ::fcntl(original_, F_SETFD, FD_CLOEXEC);
@@ -104,16 +122,22 @@ public:
             DWORD count = 0;
             if (!::ReadFile(reader_, buffer, sizeof(buffer), &count, nullptr) || count == 0) break;
 #else
-            const auto count = ::pread(::fileno(file_), buffer, sizeof(buffer), offset_);
+            const auto count = ::pread(::fileno(file_), buffer, sizeof(buffer), bytes_read_);
             if (count < 0 && errno == EINTR) continue;
             if (count <= 0) break;
-            offset_ += count;
 #endif
+            bytes_read_ += static_cast<std::size_t>(count);
             changed = true;
             for (std::size_t i = 0; i < static_cast<std::size_t>(count); ++i) {
-                if (buffer[i] == '\n') lines.emplace_back();
-                else if (buffer[i] == '\t') lines.back() += "    ";
-                else if (buffer[i] != '\r') lines.back() += buffer[i];
+                if (buffer[i] == '\n') NewLine();
+                else if (buffer[i] != '\r') {
+                    // Keep UTF-8 continuation bytes with the preceding character.
+                    if (lines.back().size() >= max_log_line_bytes &&
+                        (lines.back().size() >= max_log_line_bytes + 3 ||
+                         (static_cast<unsigned char>(buffer[i]) & 0xC0) != 0x80)) NewLine();
+                    if (buffer[i] == '\t') lines.back() += "    ";
+                    else lines.back() += buffer[i];
+                }
             }
             // Keep the original terminal output as well.
             std::size_t written = 0;
@@ -130,22 +154,38 @@ public:
                 written += result;
             }
         }
+        if (bytes_read_ >= max_log_file_bytes) {
+#ifdef _WIN32
+            if (::_chsize_s(::_fileno(file_), 0) == 0) {
+                LARGE_INTEGER beginning{};
+                ::SetFilePointerEx(reader_, beginning, nullptr, FILE_BEGIN);
+                bytes_read_ = 0;
+            }
+#else
+            if (::ftruncate(::fileno(file_), 0) == 0) bytes_read_ = 0;
+#endif
+        }
         return changed;
     }
 
     bool IsActive() const { return active_; }
-    std::vector<std::string> lines{std::string{}};
+    std::deque<std::string> lines{std::string{}};
 
 private:
+    void NewLine()
+    {
+        lines.emplace_back();
+        if (lines.size() > max_log_lines) lines.pop_front();
+    }
+
     FILE* file_ = nullptr;
     int original_ = -1;
 #ifdef _WIN32
     HANDLE reader_ = INVALID_HANDLE_VALUE;
     std::wstring temp_path_;
     int original_mode_ = -1;
-#else
-    off_t offset_ = 0;
 #endif
+    std::size_t bytes_read_ = 0;
     bool active_ = false;
 };
 

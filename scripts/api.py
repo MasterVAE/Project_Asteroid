@@ -211,7 +211,7 @@ def getModules(timeout=2.0) -> list:
 
 # модули
 
-class Prop:
+class Propulsion:
     name = "prop"
     def __init__(self, name):
         self.name = name
@@ -222,6 +222,28 @@ class Prop:
 
     def throttle(self, value=1.0):
         command("set_throttle", module=self.name, value=value)
+
+
+class Storage:
+    name = "storage"
+    def __init__(self, name):
+        self.name = name
+
+    def getStorage(self):
+        return {
+            item["resource"]: item["count"]
+            for item in _request("get_storage", module=self.name)
+        }
+
+    def readyForRecieve(self):
+        command("ready_for_recieve", module=self.name)
+
+    def notReadyForRecieve(self):
+        command("not_reaady_for_recieve", module=self.name)
+
+    def transfer(self, id, resource):
+        command("transfer", module=self.name, value=(id, resource))
+
 
 
 class RCS:
@@ -242,3 +264,13 @@ class RCS:
 
     def setThrust(self, value=(0, 0)):
         command("set_thrust", module=self.name, value=value)
+
+class Power:
+    name = "power"
+    def __init__(self, name):
+                self.name = name
+    def getCapacity(self, timeout=2.0):
+        return float(_request("get_capacity", module=self.name, timeout=timeout)["capacity"])
+    def getCharge(self, timeout=2.0):
+        return float(_request("get_charge", module=self.name, timeout=timeout)["charge"])
+    

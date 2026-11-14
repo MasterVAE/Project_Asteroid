@@ -64,6 +64,8 @@ World::World() : next_id_(0) {
         craft->AddModule(MODULE_TYPE::STORAGE);
         craft->AddModule(MODULE_TYPE::RCS);
         craft->AddModule(MODULE_TYPE::DRILL);
+        craft->AddModule(MODULE_TYPE::SCAN);
+        craft->AddModule(MODULE_TYPE::POWER);
         SpawnEntity(std::move(craft));
     }
 
@@ -125,8 +127,19 @@ void World::DestroyEntity(Entity* entity)
 
 
 // Asteroid
-Asteroid::Asteroid() : Entity(ENTITY_TYPE::ASTEROID) {}
-Asteroid::Asteroid(Vector2 pos) : Entity(ENTITY_TYPE::ASTEROID, pos, Vector2(0), 0, 0) {}
+Asteroid::Asteroid() : Asteroid(Vector2(0)) {}
+Asteroid::Asteroid(Vector2 pos) : Entity(ENTITY_TYPE::ASTEROID, pos, Vector2(0), 0, 0)
+{
+    static thread_local std::mt19937 gen(std::random_device{}());
+    std::uniform_int_distribution<int> count_dist(1, 10);
+    std::uniform_int_distribution<std::size_t> type_dist(0, RESOURCES_COUNT - 1);
+
+    const int count = count_dist(gen);
+    for (int i = 0; i < count; ++i)
+    {
+        ++resources_[RESOURCES[type_dist(gen)].type];
+    }
+}
 
 void Asteroid::Update(float) {}
 
@@ -201,6 +214,14 @@ Module& Craft::AddModule(MODULE_TYPE type)
     {
         mdl = std::make_unique<DrillModule>(this);
     }
+    else if(type == MODULE_TYPE::SCAN)
+    {
+        mdl = std::make_unique<ScanModule>(this);
+    }
+    else if(type == MODULE_TYPE::POWER)
+    {
+        mdl = std::make_unique<PowerModule>(this);
+    }
     else
     {
         throw std::invalid_argument("Unknown module type");
@@ -220,6 +241,18 @@ std::vector<Module*> Craft::GetModules()
     modules.reserve(modules_.size());
     for (auto& module : modules_) {
         modules.push_back(module.get());
+    }
+    return modules;
+}
+
+std::vector<Module*> Craft::GetModulesOfType(MODULE_TYPE type)
+{
+    std::lock_guard lock(state_mutex_);
+    std::vector<Module*> modules;
+    for (const auto& module : modules_)
+    {
+        if (module->GetType() == type)
+            modules.push_back(module.get());
     }
     return modules;
 }

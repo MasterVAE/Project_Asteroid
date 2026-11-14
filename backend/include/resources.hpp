@@ -4,8 +4,12 @@
 
 enum RESOURCE_TYPE
 {
-    ROCK,
-    STONE
+    SILICON,
+    CARBON,
+    IRON,
+    ICE,
+    COPPER,
+    GOLD
 };
 
 struct RESOURCE_DATA
@@ -16,8 +20,12 @@ struct RESOURCE_DATA
 
 inline const RESOURCE_DATA RESOURCES[] =
 {
-    {ROCK, "rock"},
-    {STONE, "stone"}
+    {SILICON, "silicon"},
+    {CARBON, "carbon"},
+    {IRON, "iron"},
+    {ICE, "ice"},
+    {COPPER, "copper"},
+    {GOLD, "gold"}
 };
 
 static const std::size_t RESOURCES_COUNT = sizeof(RESOURCES)/sizeof(RESOURCES[0]);

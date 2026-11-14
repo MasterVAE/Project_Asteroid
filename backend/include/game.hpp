@@ -87,6 +87,7 @@ public:
     ~Craft() override;
 
     std::vector<Module*> GetModules();
+    std::vector<Module*> GetModulesOfType(MODULE_TYPE type);
     Module& AddModule(MODULE_TYPE type);
 
     void LaunchScript(std::string filename);
