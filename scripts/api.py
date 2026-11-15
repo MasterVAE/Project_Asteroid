@@ -185,6 +185,16 @@ def getId(timeout=2.0) -> int:
     """Возвращает ID корабля."""
     return int(_request("get_id", timeout=timeout)["craft_id"])
 
+def getName(timeout=2.0) -> str:
+    """Возвращает текущее имя корабля из Entity.GetName()."""
+    return _request("get_name", timeout=timeout)["name"]
+
+def setName(name):
+    """Переименовывает свой корабль; команда без ожидания подтверждения."""
+    if not isinstance(name, str) or not name.strip():
+        raise ValueError("Craft name must be a non-empty string")
+    command("set_name", value=name)
+
 def getPos(timeout=2.0) -> tuple:
     """Возвращает мировые координаты корабля как (x, y)."""
     result = _request("get_position", timeout=timeout)
@@ -207,17 +217,19 @@ def getModules(timeout=2.0) -> list:
     """Возвращает список имён установленных модулей."""
     return _request("get_modules", timeout=timeout)["modules"]
 
-
+def getMass(timeout=2.0) -> float:
+    """Возвращает массу корабля с грузом."""
+    return float(_request("get_mass", timeout=timeout)["mass"])
 
 # модули
 
 class Propulsion:
-    name = "prop"
+    name = "propulsion"
     def __init__(self, name):
         self.name = name
 
     def getMaxThrottle(self, timeout=2.0) -> float:
-        """Возвращает максимальное ускорение основного двигателя."""
+        """Возвращает максимальную силу тяги; ускорение равно силе / массе."""
         return float(_request("get_max_throttle", module=self.name, timeout=timeout)["max_throttle"])
 
     def throttle(self, value=1.0):
@@ -229,17 +241,17 @@ class Storage:
     def __init__(self, name):
         self.name = name
 
-    def getStorage(self):
+    def getStorage(self, timeout=2.0) -> dict:
         return {
             item["resource"]: item["count"]
-            for item in _request("get_storage", module=self.name)
+            for item in _request("get_storage", module=self.name, timeout=timeout)
         }
 
     def readyForRecieve(self):
         command("ready_for_recieve", module=self.name)
 
     def notReadyForRecieve(self):
-        command("not_reaady_for_recieve", module=self.name)
+        command("not_ready_for_recieve", module=self.name)
 
     def transfer(self, id, resource):
         command("transfer", module=self.name, value=(id, resource))
@@ -249,7 +261,7 @@ class Storage:
 class RCS:
     name = "rcs"
     def __init__(self, name):
-            self.name = name
+        self.name = name
 
     def getMaxGyro(self, timeout=2.0) -> float:
         """Возвращает максимальную угловую скорость в рад/с."""
@@ -259,18 +271,87 @@ class RCS:
         command("set_gyro", module=self.name, value=value)
 
     def getThrust(self, timeout=2.0) -> float:
-        """Возвращает максимальное ускорение маневровых двигателей."""
+        """Возвращает максимальную силу маневровой тяги; ускорение равно силе / массе."""
         return float(_request("get_max_thrust", module=self.name, timeout=timeout)["max_thrust"])
 
     def setThrust(self, value=(0, 0)):
         command("set_thrust", module=self.name, value=value)
 
+class Drill:
+    name = "drill"
+
+    def __init__(self, name):
+        self.name = name
+
+    def getDrillCooldown(self, timeout=2.0) -> float:
+        """Возвращает интервал добычи в секундах работы с питанием."""
+        return float(_request("get_drill_cooldown", module=self.name, timeout=timeout)["drill_cooldown"])
+
+    def enable(self):
+        """Включает бур."""
+        command("enable", module=self.name)
+
+    def disable(self):
+        """Выключает бур."""
+        command("disable", module=self.name)
+
+
+class Scaner:
+    name = "scaner"
+
+    def __init__(self, name):
+        self.name = name
+
+    def scan(self, timeout=2.0) -> list:
+        """Объекты с полями id, name, type (craft/asteroid), x, y; без питания — []."""
+        return _request("scan", module=self.name, timeout=timeout)
+
+
 class Power:
     name = "power"
     def __init__(self, name):
-                self.name = name
-    def getCapacity(self, timeout=2.0):
+        self.name = name
+    def getCapacity(self, timeout=2.0) -> float:
         return float(_request("get_capacity", module=self.name, timeout=timeout)["capacity"])
-    def getCharge(self, timeout=2.0):
+    def getCharge(self, timeout=2.0) -> float:
         return float(_request("get_charge", module=self.name, timeout=timeout)["charge"])
-    
+
+
+class Factory:
+    name = "factory"
+
+    def __init__(self, name):
+        self.name = name
+
+    def getRecipies(self, timeout=2.0) -> list:
+        """Возвращает все рецепты с input/output; индекс в списке используется в produce."""
+        return _request("get_recipies", module=self.name, timeout=timeout)
+
+    def produce(self, index):
+        """Добавляет одну операцию по рецепту с указанным индексом в очередь завода."""
+        if isinstance(index, bool) or not isinstance(index, int) or index < 0:
+            raise ValueError("Recipe index must be a non-negative integer")
+        command("produce", module=self.name, value=index)
+
+
+class Shipyard:
+    name = "shipyard"
+
+    def __init__(self, name):
+        self.name = name
+
+    def getRecipies(self, timeout=2.0) -> list:
+        """Рецепты верфи: input — список ресурсов, output — craft или имя типа модуля."""
+        return _request("get_recipies", module=self.name, timeout=timeout)
+
+    def constructCraft(self):
+        """Ставит строительство пустого корабля в очередь; команда без подтверждения."""
+        command("construct_craft", module=self.name)
+
+    def addModule(self, craft_id, module_name):
+        """Ставит установку модуля на корабль в радиусе 20 в очередь верфи."""
+        if isinstance(craft_id, bool) or not isinstance(craft_id, int) or craft_id < 0:
+            raise ValueError("Craft ID must be a non-negative integer")
+        if not isinstance(module_name, str) or not module_name:
+            raise ValueError("Module name must be a non-empty string, e.g. 'storage'")
+        command("add_module", module=self.name, value=(craft_id, module_name))

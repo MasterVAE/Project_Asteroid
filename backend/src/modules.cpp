@@ -7,6 +7,7 @@
 #include <mutex>
 #include <stdexcept>
 #include <iostream>
+#include <utility>
 
 // prop module
 
@@ -14,7 +15,7 @@
 void PropulsionModule::Update(float delta_time)
 {
     std::lock_guard lock(parent_->state_mutex_);
-    parent_->SetVelocity(parent_->GetVelocity() + max_thrust_ * throttle_ * delta_time * parent_->Forward());
+    parent_->SetVelocity(parent_->GetVelocity() + max_thrust_ * throttle_ * delta_time * parent_->Forward() / parent_->GetMass());
 }
 
 void PropulsionModule::SetThrottle(float throttle)
@@ -225,10 +226,6 @@ boost::json::object StorageModule::Handle(boost::json::object request)
     return boost::json::object{};
 }
 
-void StorageModule::Transfer(std::size_t id, RESOURCE_TYPE type)
-{
-
-}
 
 
 
@@ -242,7 +239,7 @@ void RCSModule::Update(float delta_time)
 {
     std::lock_guard lock(parent_->state_mutex_);
     parent_->SetAngularVelocity(gyro_ * max_gyro_);
-    parent_->SetVelocity(parent_->GetVelocity() + max_thrust_ * parent_->FromLocalTowWorld(thrust_) * delta_time);
+    parent_->SetVelocity(parent_->GetVelocity() + max_thrust_ * parent_->FromLocalTowWorld(thrust_) * delta_time / parent_->GetMass());
 }
 
 void RCSModule::SetGyro(float gyro)
@@ -351,7 +348,7 @@ void DrillModule::Update(float delta_time)
             continue;
 
         auto* asteroid = static_cast<Asteroid*>(entity.get());
-        const auto& resources = asteroid->GetResources();
+
 
         const RESOURCE_TYPE resource = asteroid->Mine();
         for (auto* module : modules)
@@ -419,15 +416,15 @@ boost::json::object DrillModule::Handle(boost::json::object request)
 
 
 
-// SCAN MODULE
+// SCANER MODULE
 
 
 
 void ScanModule::Update(float /*delta_time*/) {}
 
-std::vector<std::pair<std::string, Vector2>> ScanModule::Scan()
+std::vector<ScanModule::Result> ScanModule::Scan()
 {
-    std::vector<std::pair<std::string, Vector2>> result;
+    std::vector<Result> result;
     if (parent_->world == nullptr)
         return result;
 
@@ -445,10 +442,8 @@ std::vector<std::pair<std::string, Vector2>> ScanModule::Scan()
         const Vector2 position = entity->GetPosition();
         if (origin.DistanceSquared(position) <= radius * radius)
         {
-            const std::string name =
-                std::string(entity->GetType() == ENTITY_TYPE::ASTEROID ? "Asteroid #" : "Craft #") +
-                std::to_string(id);
-            result.emplace_back(name, position);
+            result.push_back({id, entity->GetName(),
+                entity->GetType() == ENTITY_TYPE::ASTEROID ? "asteroid" : "craft", position});
         }
     }
 
@@ -462,12 +457,14 @@ boost::json::object ScanModule::Handle(boost::json::object request)
     if(method == "scan")
     {
         boost::json::array result;
-        for (const auto& [name, position] : Scan())
+        for (const auto& entry : Scan())
         {
             result.push_back(boost::json::object{
-                {"name", name},
-                {"x", position.x},
-                {"y", position.y}
+                {"id", entry.id},
+                {"name", entry.name},
+                {"type", entry.type},
+                {"x", entry.position.x},
+                {"y", entry.position.y}
             });
         }
 
@@ -488,6 +485,11 @@ boost::json::object ScanModule::Handle(boost::json::object request)
 bool PowerModule::TakeCharge(float charge)
 {
     std::lock_guard lock(parent_->state_mutex_);
+    return TakeChargeLocked(charge);
+}
+
+bool PowerModule::TakeChargeLocked(float charge)
+{
     if (!std::isfinite(charge) || charge < 0 || charge_ < charge)
         return false;
     charge_ -= charge;
@@ -523,4 +525,325 @@ boost::json::object PowerModule::Handle(boost::json::object request)
         };
     }
     return boost::json::object{};
+}
+
+
+
+// FACTORY MODULE
+
+
+const std::vector<RECIPIE>& FactoryModel::GetRecipies() const
+{
+    static const std::vector<RECIPIE> recipies(RECIPIES, RECIPIES + RECIPIES_COUNT);
+    return recipies;
+}
+
+void FactoryModel::Produce(RECIPIE recipie)
+{
+    std::lock_guard lock(parent_->state_mutex_);
+    queue_.push_back(std::move(recipie));
+}
+
+void FactoryModel::Update(float delta_time)
+{
+    if (!std::isfinite(delta_time) || delta_time <= 0)
+        return;
+
+    const auto storage_modules = parent_->GetModulesOfType(MODULE_TYPE::STORAGE);
+    const auto power_modules = parent_->GetModulesOfType(MODULE_TYPE::POWER);
+    std::lock_guard lock(parent_->state_mutex_);
+
+    while (!queue_.empty())
+    {
+        // Stage the whole conversion so blocked orders cannot consume resources.
+        std::vector<std::unordered_map<RESOURCE_TYPE, std::size_t>> inventories;
+        inventories.reserve(storage_modules.size());
+        for (auto* module : storage_modules)
+            inventories.push_back(static_cast<StorageModule*>(module)->GetInventory());
+
+        const auto& recipie = queue_.front();
+        for (const auto resource : recipie.input)
+        {
+            bool found = false;
+            for (auto& inventory : inventories)
+            {
+                const auto it = inventory.find(resource);
+                if (it == inventory.end() || it->second == 0)
+                    continue;
+                if (--it->second == 0)
+                    inventory.erase(it);
+                found = true;
+                break;
+            }
+            if (!found)
+                return;
+        }
+
+        std::vector<std::size_t> free_space;
+        free_space.reserve(storage_modules.size());
+        for (std::size_t i = 0; i < storage_modules.size(); ++i)
+        {
+            std::size_t space = static_cast<StorageModule*>(storage_modules[i])->GetCapacity();
+            for (const auto& [resource, count] : inventories[i])
+            {
+                if (count > space)
+                    return;
+                space -= count;
+            }
+            free_space.push_back(space);
+        }
+        for (const auto resource : recipie.output)
+        {
+            const auto slot = std::find_if(free_space.begin(), free_space.end(),
+                [](std::size_t space) { return space > 0; });
+            if (slot == free_space.end())
+                return;
+            ++inventories[static_cast<std::size_t>(slot - free_space.begin())][resource];
+            --*slot;
+        }
+
+        const float elapsed = std::min(delta_time, production_cooldown_ - time_);
+        // Only advance production after paying for this interval of work.
+        // Keep the craft lock held so other consumers cannot take this charge.
+        const bool powered = std::any_of(power_modules.begin(), power_modules.end(),
+            [this, elapsed](Module* module) {
+                return static_cast<PowerModule*>(module)->TakeChargeLocked(
+                    energy_consuption_per_second_ * elapsed);
+            });
+        if (!powered)
+            return;
+
+        time_ += elapsed;
+        delta_time -= elapsed;
+        if (time_ < production_cooldown_)
+            return;
+
+        for (std::size_t i = 0; i < storage_modules.size(); ++i)
+            static_cast<StorageModule*>(storage_modules[i])->GetInventory().swap(inventories[i]);
+        queue_.pop_front();
+        time_ = 0;
+        if (delta_time <= 0)
+            return;
+    }
+}
+
+boost::json::object FactoryModel::Handle(boost::json::object request)
+{
+    const auto method = boost::json::value_to<std::string>(request.at("method"));
+    if (method == "get_recipies")
+    {
+        const auto resource_name = [](RESOURCE_TYPE resource) -> const std::string& {
+            const auto* data = std::find_if(RESOURCES, RESOURCES + RESOURCES_COUNT,
+                [resource](const RESOURCE_DATA& entry) { return entry.type == resource; });
+            if (data == RESOURCES + RESOURCES_COUNT)
+                throw std::runtime_error("Unknown resource type");
+            return data->name;
+        };
+
+        boost::json::array result;
+        result.reserve(GetRecipies().size());
+        for (const auto& recipie : GetRecipies())
+        {
+            boost::json::array input;
+            boost::json::array output;
+            for (const auto resource : recipie.input)
+                input.push_back(boost::json::value(resource_name(resource)));
+            for (const auto resource : recipie.output)
+                output.push_back(boost::json::value(resource_name(resource)));
+            result.push_back(boost::json::object{{"input", input}, {"output", output}});
+        }
+        return {{"type", "response"}, {"id", request.at("id")}, {"result", result}};
+    }
+    if (method == "produce")
+    {
+        const auto& value = request.at("value");
+        if ((!value.is_int64() && !value.is_uint64()) ||
+            (value.is_int64() && value.as_int64() < 0))
+            throw std::invalid_argument("Recipe index must be a non-negative integer");
+        const auto index = boost::json::value_to<std::size_t>(value);
+        if (index >= GetRecipies().size())
+            throw std::out_of_range("Recipe index out of range");
+        Produce(GetRecipies()[index]);
+    }
+    return {};
+}
+
+
+
+// SHIPYARD MODULE
+
+
+
+void ShipyardModule::ConstructCraft()
+{
+    std::lock_guard lock(parent_->state_mutex_);
+    queue_.push_back({0, MODULE_TYPE::NONE});
+}
+void ShipyardModule::AddModule(std::size_t craft_id, MODULE_TYPE type)
+{
+    const auto* recipie = std::find_if(MODULE_RECIPIES, MODULE_RECIPIES + MODULE_RECIPIES_COUNT,
+        [type](const CONSTRUCTION_RECIPIE& entry) { return entry.output == type; });
+    if (recipie == MODULE_RECIPIES + MODULE_RECIPIES_COUNT)
+        throw std::invalid_argument("Unknown module type");
+
+    std::lock_guard lock(parent_->state_mutex_);
+    queue_.push_back({craft_id, type});
+}
+
+void ShipyardModule::Update(float delta_time)
+{
+    if (!std::isfinite(delta_time) || delta_time <= 0 || parent_->world == nullptr)
+        return;
+
+    while (delta_time > 0)
+    {
+        const auto storages = parent_->GetModulesOfType(MODULE_TYPE::STORAGE);
+        const auto powers = parent_->GetModulesOfType(MODULE_TYPE::POWER);
+        std::unique_lock lock(parent_->state_mutex_);
+        if (queue_.empty())
+            return;
+
+        const auto order = queue_.front();
+        const CONSTRUCTION_RECIPIE* recipie = &CRAFT_RECIPIE;
+        Craft* target = nullptr;
+        std::unique_lock<std::mutex> target_lock;
+        if (order.type != MODULE_TYPE::NONE)
+        {
+            const auto& entities = parent_->world->GetEntities();
+            const auto it = entities.find(order.craft_id);
+            if (it == entities.end() || it->second->GetType() != ENTITY_TYPE::CRAFT)
+            {
+                // Discard an impossible target without blocking subsequent orders.
+                std::cerr << "Shipyard: target craft not found: " << order.craft_id << '\n';
+                queue_.pop_front();
+                time_ = 0;
+                continue;
+            }
+            target = static_cast<Craft*>(it->second.get());
+            if (target != parent_)
+            {
+                target_lock = std::unique_lock<std::mutex>(target->state_mutex_, std::defer_lock);
+                lock.unlock();
+                std::lock(lock, target_lock);
+            }
+            if (!(parent_->GetPosition().DistanceSquared(target->GetPosition()) <=
+                    building_radius_ * building_radius_))
+                return;
+
+            recipie = std::find_if(MODULE_RECIPIES, MODULE_RECIPIES + MODULE_RECIPIES_COUNT,
+                [order](const CONSTRUCTION_RECIPIE& entry) { return entry.output == order.type; });
+            if (recipie == MODULE_RECIPIES + MODULE_RECIPIES_COUNT)
+                throw std::logic_error("Unknown module in shipyard queue");
+        }
+
+        // Prepare all withdrawals before consuming energy or changing any storage.
+        std::vector<std::unordered_map<RESOURCE_TYPE, std::size_t>> inventories;
+        inventories.reserve(storages.size());
+        for (auto* module : storages)
+            inventories.push_back(static_cast<StorageModule*>(module)->GetInventory());
+        for (const auto resource : recipie->input)
+        {
+            bool found = false;
+            for (auto& inventory : inventories)
+            {
+                const auto it = inventory.find(resource);
+                if (it == inventory.end() || it->second == 0)
+                    continue;
+                if (--it->second == 0)
+                    inventory.erase(it);
+                found = true;
+                break;
+            }
+            if (!found)
+                return;
+        }
+
+        const float elapsed = std::min(delta_time, production_cooldown_ - time_);
+        const bool powered = std::any_of(powers.begin(), powers.end(),
+            [this, elapsed](Module* module) {
+                return static_cast<PowerModule*>(module)->TakeChargeLocked(
+                    energy_consuption_per_second_ * elapsed);
+            });
+        if (!powered)
+            return;
+
+        time_ += elapsed;
+        delta_time -= elapsed;
+        if (time_ < production_cooldown_)
+            return;
+
+        if (target != nullptr)
+        {
+            target->AddModuleLocked(order.type);
+        }
+        else
+        {
+            auto craft = std::make_unique<Craft>(
+                parent_->GetPosition() + parent_->Forward() * (building_radius_ * 0.5f));
+            craft->SetVelocity(parent_->GetVelocity());
+            craft->SetRotation(parent_->GetRotation());
+            parent_->world->SpawnEntity(std::move(craft));
+        }
+
+        for (std::size_t i = 0; i < storages.size(); ++i)
+            static_cast<StorageModule*>(storages[i])->GetInventory().swap(inventories[i]);
+        parent_->RecalculateMassLocked();
+        queue_.pop_front();
+        time_ = 0;
+    }
+}
+
+boost::json::object ShipyardModule::Handle(boost::json::object request)
+{
+    const auto method = boost::json::value_to<std::string>(request.at("method"));
+    if (method == "construct_craft")
+    {
+        ConstructCraft();
+    }
+    else if (method == "add_module")
+    {
+        const auto& value = request.at("value").as_array();
+        if (value.size() != 2)
+            throw std::invalid_argument("Module construction must contain [craft_id, module_name]");
+        const auto& id = value.at(0);
+        if ((!id.is_int64() && !id.is_uint64()) || (id.is_int64() && id.as_int64() < 0))
+            throw std::invalid_argument("Craft ID must be a non-negative integer");
+        const auto craft_id = boost::json::value_to<std::size_t>(id);
+        const auto name = boost::json::value_to<std::string>(value.at(1));
+        const auto* module = std::find_if(MODULES_DATA, MODULES_DATA + MODULES_COUNT,
+            [&name](const MODULE_DATA& entry) { return entry.name == name; });
+        if (module == MODULES_DATA + MODULES_COUNT)
+            throw std::invalid_argument("Unknown module name");
+        AddModule(craft_id, module->type);
+    }
+    else if (method == "get_recipies")
+    {
+        const auto serialize = [](const CONSTRUCTION_RECIPIE& recipie) {
+            boost::json::array input;
+            for (const auto resource : recipie.input)
+            {
+                const auto* data = std::find_if(RESOURCES, RESOURCES + RESOURCES_COUNT,
+                    [resource](const RESOURCE_DATA& entry) { return entry.type == resource; });
+                if (data == RESOURCES + RESOURCES_COUNT)
+                    throw std::logic_error("Unknown construction resource");
+                input.push_back(boost::json::value(data->name));
+            }
+            std::string output = "craft";
+            if (recipie.output != MODULE_TYPE::NONE)
+            {
+                const auto* data = std::find_if(MODULES_DATA, MODULES_DATA + MODULES_COUNT,
+                    [&recipie](const MODULE_DATA& entry) { return entry.type == recipie.output; });
+                if (data == MODULES_DATA + MODULES_COUNT)
+                    throw std::logic_error("Unknown construction module");
+                output = data->name;
+            }
+            return boost::json::object{{"input", input}, {"output", output}};
+        };
+        boost::json::array result;
+        result.push_back(serialize(CRAFT_RECIPIE));
+        for (const auto& recipie : MODULE_RECIPIES)
+            result.push_back(serialize(recipie));
+        return {{"type", "response"}, {"id", request.at("id")}, {"result", result}};
+    }
+    return {};
 }

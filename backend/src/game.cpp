@@ -57,17 +57,27 @@ Vector2 RandomVector(float min, float max)
 
 // World
 World::World() : next_id_(0) {
-
-    for(int i = 0; i < 10; i++){
-        auto craft = std::make_unique<Craft>(Vector2(i * 30, 0));
-        craft->AddModule(MODULE_TYPE::PROPULSION);
-        craft->AddModule(MODULE_TYPE::STORAGE);
-        craft->AddModule(MODULE_TYPE::RCS);
-        craft->AddModule(MODULE_TYPE::DRILL);
-        craft->AddModule(MODULE_TYPE::SCAN);
-        craft->AddModule(MODULE_TYPE::POWER);
-        SpawnEntity(std::move(craft));
+    auto shipyard = std::make_unique<Craft>(Vector2(0, 0), "Shipyard");
+    shipyard->AddModule(MODULE_TYPE::SHIPYARD);
+    shipyard->AddModule(MODULE_TYPE::FACTORY);
+    for (int i = 0; i < 6; ++i)
+    {
+        auto& storage = static_cast<StorageModule&>(shipyard->AddModule(MODULE_TYPE::STORAGE));
+        storage.ReadyForRecieve();
     }
+    // Ten reactors can sustain the factory (20/s) and shipyard (30/s).
+    for (int i = 0; i < 10; ++i)
+        shipyard->AddModule(MODULE_TYPE::POWER);
+    SpawnEntity(std::move(shipyard));
+
+    auto miner = std::make_unique<Craft>(Vector2(30, 0), "Miner");
+    miner->AddModule(MODULE_TYPE::PROPULSION);
+    miner->AddModule(MODULE_TYPE::STORAGE);
+    miner->AddModule(MODULE_TYPE::RCS);
+    miner->AddModule(MODULE_TYPE::DRILL);
+    miner->AddModule(MODULE_TYPE::SCANER);
+    miner->AddModule(MODULE_TYPE::POWER);
+    SpawnEntity(std::move(miner));
 
     for(int i = 0; i < 50; i++)
     {
@@ -99,14 +109,25 @@ void World::Update(float delta_time) {
     for (const auto id : pending_destroy_)
         entities_.erase(id);
     pending_destroy_.clear();
+
+    for (auto& entity : pending_spawn_)
+    {
+        const auto id = entity->GetId();
+        entities_.emplace(id, std::move(entity));
+    }
+    pending_spawn_.clear();
 }
 
 void World::SpawnEntity(std::unique_ptr<Entity> entity)
 {
     std::size_t id = next_id_++;
     entity->SetId(id);
+    entity->SetName(entity->GetName() + " #" + std::to_string(id));
     entity->world = this;
-    entities_.emplace(id, std::move(entity));
+    if (updating_)
+        pending_spawn_.push_back(std::move(entity));
+    else
+        entities_.emplace(id, std::move(entity));
 }
 
 void World::DestroyEntity(Entity* entity)
@@ -128,11 +149,12 @@ void World::DestroyEntity(Entity* entity)
 
 // Asteroid
 Asteroid::Asteroid() : Asteroid(Vector2(0)) {}
-Asteroid::Asteroid(Vector2 pos) : Entity(ENTITY_TYPE::ASTEROID, pos, Vector2(0), 0, 0)
+Asteroid::Asteroid(Vector2 pos, std::string name)
+    : Entity(ENTITY_TYPE::ASTEROID, pos, Vector2(0), 0, 0, std::move(name))
 {
     static thread_local std::mt19937 gen(std::random_device{}());
     std::uniform_int_distribution<int> count_dist(1, 10);
-    std::uniform_int_distribution<std::size_t> type_dist(0, RESOURCES_COUNT - 1);
+    std::uniform_int_distribution<std::size_t> type_dist(0, RAW_RESOURCES_COUNT - 1);
 
     const int count = count_dist(gen);
     for (int i = 0; i < count; ++i)
@@ -180,12 +202,57 @@ RESOURCE_TYPE Asteroid::Mine()
 
 
 // Craft
-Craft::Craft() : Entity(ENTITY_TYPE::CRAFT), module_index_(0) {}
-Craft::Craft(Vector2 pos) : Entity(ENTITY_TYPE::CRAFT, pos, Vector2(0), 0, 0), module_index_(0) {}
+Craft::Craft() : Craft(Vector2(0)) {}
+Craft::Craft(Vector2 pos, std::string name)
+    : Entity(ENTITY_TYPE::CRAFT, pos, Vector2(0), 0, 0, std::move(name)), module_index_(0) {}
+
+void Craft::RecalculateMass()
+{
+    std::lock_guard lock(state_mutex_);
+    RecalculateMassLocked();
+}
+
+void Craft::RecalculateMassLocked()
+{
+    mass_ = 0;
+
+    for (const auto& module : modules_)
+    {
+        for (const auto& data : MODULES_DATA)
+        {
+            if (data.type == module->GetType())
+            {
+                mass_ += data.mass;
+                break;
+            }
+        }
+
+        if (module->GetType() == MODULE_TYPE::STORAGE)
+        {
+            auto* storage = static_cast<StorageModule*>(module.get());
+            for (const auto& [resource, count] : storage->GetInventory())
+            {
+                for (const auto& data : RESOURCES)
+                {
+                    if (data.type == resource)
+                    {
+                        mass_ += data.mass * count;
+                        break;
+                    }
+                }
+            }
+        }
+    }
+}
 
 Module& Craft::AddModule(MODULE_TYPE type)
 {
     std::lock_guard lock(state_mutex_);
+    return AddModuleLocked(type);
+}
+
+Module& Craft::AddModuleLocked(MODULE_TYPE type)
+{
     std::unique_ptr<Module> mdl;
     std::string name;
 
@@ -214,13 +281,21 @@ Module& Craft::AddModule(MODULE_TYPE type)
     {
         mdl = std::make_unique<DrillModule>(this);
     }
-    else if(type == MODULE_TYPE::SCAN)
+    else if(type == MODULE_TYPE::SCANER)
     {
         mdl = std::make_unique<ScanModule>(this);
     }
     else if(type == MODULE_TYPE::POWER)
     {
         mdl = std::make_unique<PowerModule>(this);
+    }
+    else if(type == MODULE_TYPE::FACTORY)
+    {
+        mdl = std::make_unique<FactoryModel>(this);
+    }
+    else if(type == MODULE_TYPE::SHIPYARD)
+    {
+        mdl = std::make_unique<ShipyardModule>(this);
     }
     else
     {
@@ -230,6 +305,8 @@ Module& Craft::AddModule(MODULE_TYPE type)
     name += "_" + std::to_string(module_index_++);
     mdl->SetName(name);
     modules_.push_back(std::move(mdl));
+
+    RecalculateMassLocked();
 
     return *modules_.back();
 }
@@ -443,6 +520,21 @@ void Craft::HandlePacket(const std::string& line)
                     {"craft_id", craft_id},
                 };
             }
+            else if (method == "get_name") {
+                response["result"] = json::object{{"name", GetName()}};
+            }
+            else if (method == "get_mass") {
+                float mass;
+
+                {
+                    std::lock_guard lock(state_mutex_);
+                    mass = GetMass();
+                }
+
+                response["result"] = json::object{
+                    {"mass", mass},
+                };
+            }
             else if (method == "get_position") {
                 Vector2 pos;
 
@@ -522,13 +614,9 @@ void Craft::HandlePacket(const std::string& line)
 
         // Команда управления кораблём
         else if (type == "command") {
-            std::string name =
-                json::value_to<std::string>(
-                    msg.at("name")
-                );
-
-
-
+            const auto method = json::value_to<std::string>(msg.at("method"));
+            if (method == "set_name")
+                SetName(json::value_to<std::string>(msg.at("value")));
         }
 
     } catch (const std::exception& e) {
@@ -598,6 +686,7 @@ void Craft::StopScript()
 
 void Craft::Update(float delta_time)
 {
+    RecalculateMass();
     for (auto* mdl : GetModules())
     {
         mdl->Update(delta_time);
@@ -608,9 +697,12 @@ void Craft::Update(float delta_time)
 
 // Entity
 
-Entity::Entity(ENTITY_TYPE type) : type_(type), position_(0), velocity_(0), rotation_(0), angular_velocity_(0) {}
-Entity::Entity(ENTITY_TYPE type, Vector2 pos, Vector2 vel, float rot, float a_vel)
-                    : type_(type), position_(pos), velocity_(vel), rotation_(rot), angular_velocity_(a_vel) {}
+Entity::Entity(ENTITY_TYPE type, std::string name)
+    : Entity(type, Vector2(0), Vector2(0), 0, 0, std::move(name)) {}
+Entity::Entity(ENTITY_TYPE type, Vector2 pos, Vector2 vel, float rot, float a_vel, std::string name)
+    : position_(pos), velocity_(vel), rotation_(rot), angular_velocity_(a_vel), type_(type),
+      name_(name.find_first_not_of(" \t\r\n") == std::string::npos
+          ? (type == ENTITY_TYPE::ASTEROID ? "Asteroid" : "Craft") : std::move(name)) {}
 
 Vector2 Entity::Forward()
 {
@@ -620,6 +712,19 @@ Vector2 Entity::Forward()
 Vector2 Entity::FromLocalTowWorld(Vector2 local)
 {
     return local.Rotated(GetRotation());
+}
+
+void Entity::SetName(std::string name)
+{
+    if (name.find_first_not_of(" \t\r\n") == std::string::npos)
+        throw std::invalid_argument("Entity name must not be empty");
+    std::lock_guard lock(entity_mutex_);
+    name_ = std::move(name);
+}
+std::string Entity::GetName() const
+{
+    std::lock_guard lock(entity_mutex_);
+    return name_;
 }
 
 std::size_t Entity::GetId() const

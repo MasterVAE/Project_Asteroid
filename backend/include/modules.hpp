@@ -3,6 +3,7 @@
 #include <boost/asio.hpp>
 #include <boost/process/v2/popen.hpp>
 #include <boost/json.hpp>
+#include <deque>
 #include <string>
 #include <unordered_map>
 
@@ -14,12 +15,15 @@ class Craft;
 
 enum MODULE_TYPE
 {
+    NONE,
     PROPULSION,
     STORAGE,
     RCS,
     DRILL,
-    SCAN,
-    POWER
+    SCANER,
+    POWER,
+    FACTORY,
+    SHIPYARD
 };
 
 class Module
@@ -32,7 +36,7 @@ protected:
 
 public:
     Module(Craft* parent, MODULE_TYPE type, std::string name)
-        : parent_(parent), name_(name), type_(type) {}
+        : name_(name), type_(type), parent_(parent) {}
     virtual ~Module() = default;
 
     std::string GetName() { return name_; }
@@ -47,7 +51,7 @@ public:
 
 class PropulsionModule : public Module
 {
-    float max_thrust_ = 10;
+    float max_thrust_ = 100;
     float throttle_ = 0;
 public:
     PropulsionModule(Craft* parent) : Module(parent, MODULE_TYPE::PROPULSION, "") {}
@@ -78,8 +82,6 @@ public:
     void ReadyForRecieve();
     void NotReadyForRecieve();
 
-    void Transfer(std::size_t id, RESOURCE_TYPE type);
-
     void Update(float delta_time) override;
 
     boost::json::object Handle(boost::json::object request) override;
@@ -90,7 +92,7 @@ class RCSModule : public Module
 {
     float max_gyro_ = 1;
     float gyro_ = 0;
-    float max_thrust_ = 1;
+    float max_thrust_ = 10;
     Vector2 thrust_;
 public:
     RCSModule(Craft* parent) : Module(parent, MODULE_TYPE::RCS, "") {}
@@ -129,9 +131,17 @@ class ScanModule : public Module
     float scan_power_ = 30;
 
 public:
-    ScanModule(Craft* parent) : Module(parent, MODULE_TYPE::SCAN, "") {}
+    ScanModule(Craft* parent) : Module(parent, MODULE_TYPE::SCANER, "") {}
 
-    std::vector<std::pair<std::string, Vector2>> Scan();
+    struct Result
+    {
+        std::size_t id;
+        std::string name;
+        std::string type;
+        Vector2 position;
+    };
+
+    std::vector<Result> Scan();
 
     void Update(float delta_time) override;
 
@@ -140,9 +150,13 @@ public:
 
 class PowerModule : public Module
 {
+    friend class FactoryModel;
+    friend class ShipyardModule;
+
     float capacity_ = 100;
     float charge_ = 100;
     float generation_per_second_ = 5;
+    bool TakeChargeLocked(float charge); // Requires the craft state mutex.
 public:
     PowerModule(Craft* parent) : Module(parent, MODULE_TYPE::POWER, "") {}
 
@@ -151,6 +165,50 @@ public:
 
     void Update(float delta_time) override;
 
+    boost::json::object Handle(boost::json::object request) override;
+};
+
+
+class FactoryModel : public Module
+{
+    float production_cooldown_ = 3;
+    float energy_consuption_per_second_ = 20;
+    float time_ = 0;
+
+    std::deque<RECIPIE> queue_;
+
+public:
+    FactoryModel(Craft* parent) : Module(parent, MODULE_TYPE::FACTORY, "") {}
+
+    const std::vector<RECIPIE>& GetRecipies() const;
+
+    void Produce(RECIPIE recipie);
+    void Update(float delta_time) override;
+
+    boost::json::object Handle(boost::json::object request) override;
+};
+
+class ShipyardModule : public Module
+{
+    struct Order
+    {
+        std::size_t craft_id;
+        MODULE_TYPE type; // NONE constructs a new craft.
+    };
+
+    float production_cooldown_ = 3;
+    float energy_consuption_per_second_ = 30;
+    float building_radius_ = 20;
+    float time_ = 0;
+    std::deque<Order> queue_;
+
+public:
+    ShipyardModule(Craft* parent) : Module(parent, MODULE_TYPE::SHIPYARD, "") {}
+
+    void ConstructCraft();
+    void AddModule(std::size_t craft_id, MODULE_TYPE type);
+
+    void Update(float delta_time) override;
     boost::json::object Handle(boost::json::object request) override;
 };
 
@@ -163,12 +221,44 @@ struct MODULE_DATA
 
 static const MODULE_DATA MODULES_DATA[] = 
 {
-    {PROPULSION, "prop", 1},
-    {STORAGE, "stor", 1},
-    {RCS, "rcs", 1},
-    {DRILL, "drill", 1},
-    {SCAN, "scan", 1},
-    {POWER, "power", 1}
+    {PROPULSION, "propulsion", 10},
+    {STORAGE, "storage", 7},
+    {RCS, "rcs", 5},
+    {DRILL, "drill", 15},
+    {SCANER, "scaner", 5},
+    {POWER, "power", 20},
+    {FACTORY, "factory", 20},
+    {SHIPYARD, "shipyard", 50}
 };
 
 static const std::size_t MODULES_COUNT = sizeof(MODULES_DATA)/sizeof(MODULES_DATA[0]);
+
+
+// Shipyard recipes create a craft or install a module, rather than produce
+// inventory items. Repeated input entries mean multiple units of a resource.
+struct CONSTRUCTION_RECIPIE
+{
+    std::vector<RESOURCE_TYPE> input;
+    MODULE_TYPE output;
+};
+
+// An empty craft; modules are installed separately using MODULE_RECIPIES.
+inline const CONSTRUCTION_RECIPIE CRAFT_RECIPIE
+{
+    {IRON_PLATE, IRON_PLATE, CIRCUIT_BOARD}, MODULE_TYPE::NONE
+};
+
+// Output names match MODULES_DATA, including the existing spelling "scaner".
+inline const CONSTRUCTION_RECIPIE MODULE_RECIPIES[] =
+{
+    {{IRON_PLATE, PIPE, PIPE, CIRCUIT_BOARD},                   MODULE_TYPE::PROPULSION},
+    {{IRON_PLATE, IRON_PLATE},                                  MODULE_TYPE::STORAGE},
+    {{IRON_PLATE, PIPE, COPPER_WIRE},                           MODULE_TYPE::RCS},
+    {{IRON_PLATE, GEAR, ELECTRIC_MOTOR},                        MODULE_TYPE::DRILL},
+    {{SILICON_WAFER, COPPER_WIRE, GLASS},                       MODULE_TYPE::SCANER},
+    {{SOLAR_CELL, BATTERY_CELL, COPPER_WIRE},                   MODULE_TYPE::POWER},
+    {{IRON_PLATE, GEAR, ELECTRIC_MOTOR, CIRCUIT_BOARD},         MODULE_TYPE::FACTORY},
+    {{IRON_PLATE, IRON_PLATE, ELECTRIC_MOTOR, CIRCUIT_BOARD},   MODULE_TYPE::SHIPYARD}
+};
+
+static const std::size_t MODULE_RECIPIES_COUNT = sizeof(MODULE_RECIPIES)/sizeof(MODULE_RECIPIES[0]);

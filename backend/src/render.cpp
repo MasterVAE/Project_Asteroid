@@ -282,10 +282,10 @@ std::vector<std::size_t> EntityIds(World* world)
     return ids;
 }
 
-std::string EntityLabel(Entity* entity)
+sf::String EntityLabel(const Entity* entity)
 {
-    return std::string(entity->GetType() == ENTITY_TYPE::ASTEROID ? "Asteroid #" : "Craft #") +
-           std::to_string(entity->GetId());
+    const auto name = entity->GetName();
+    return sf::String::fromUtf8(name.begin(), name.end());
 }
 
 std::size_t VisibleEntityRows(const sf::RenderWindow& window)
@@ -463,8 +463,8 @@ void DrawInterface(sf::RenderWindow& window, World* world)
     const float top = LogTop(window);
     panel({{0.0f, top}, {size.x, size.y - top}}, sf::Color(18, 20, 25, 250));
     const auto* target = ConsoleTarget(world);
-    const std::string console_title = target ? "Console -> Craft #" + std::to_string(target->GetId())
-                                             : "Console | Select a craft";
+    const sf::String console_title = target ? sf::String("Console -> ") + EntityLabel(target)
+                                            : sf::String("Console | Select a craft");
     label(stderr_log.IsActive() ? console_title + " | Enter: send | Up/Down: history"
                                : "Console capture failed",
           {12.0f, top + 6.0f}, sf::Color(180, 190, 205));
@@ -508,6 +508,7 @@ void DrawInterface(sf::RenderWindow& window, World* world)
 sf::RenderWindow CreateGameWindow()
 {
     sf::RenderWindow window(sf::VideoMode({800, 600}), "PROJECT ASTEROID");
+    window.setFramerateLimit(60);
     LoadInterfaceFont();
     sf::View view = window.getView();
     view.setCenter({0.0f, 0.0f});
@@ -687,6 +688,12 @@ void Render(sf::RenderWindow& window, World* world)
     arrow.setPoint(2, {-8.0f, 7.0f});
     arrow.setFillColor(sf::Color::Green);
 
+    sf::RectangleShape shipyard({32.0f, 24.0f});
+    shipyard.setOrigin({16.0f, 12.0f});
+    shipyard.setFillColor(sf::Color(55, 110, 155));
+    shipyard.setOutlineColor(sf::Color(120, 195, 235));
+    shipyard.setOutlineThickness(2.0f);
+
     // An uneven rock silhouette, kept inside the selection circle.
     sf::ConvexShape asteroid(8);
     asteroid.setPoint(0, {14.0f, 0.0f});
@@ -715,9 +722,19 @@ void Render(sf::RenderWindow& window, World* world)
                                  sf::degrees(static_cast<float>((id % 360) * 37 % 360)));
             window.draw(asteroid);
         } else {
-            arrow.setPosition({pos.x, -pos.y});
-            arrow.setRotation(sf::radians(-entity.second->GetRotation()));
-            window.draw(arrow);
+            auto* craft = static_cast<Craft*>(entity.second.get());
+            if (!craft->GetModulesOfType(MODULE_TYPE::SHIPYARD).empty())
+            {
+                shipyard.setPosition({pos.x, -pos.y});
+                shipyard.setRotation(sf::radians(-craft->GetRotation()));
+                window.draw(shipyard);
+            }
+            else
+            {
+                arrow.setPosition({pos.x, -pos.y});
+                arrow.setRotation(sf::radians(-craft->GetRotation()));
+                window.draw(arrow);
+            }
         }
     }
 

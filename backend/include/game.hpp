@@ -40,12 +40,18 @@ private:
     float angular_velocity_ = 0.0f;
     ENTITY_TYPE type_;
 
+    std::string name_;
+
 public:
     World* world = nullptr;
 
     // ID
     std::size_t GetId() const;
     void SetId(std::size_t id);
+
+    // Name
+    void SetName(std::string name);
+    std::string GetName() const;
 
     // Position
     Vector2 GetPosition() const;
@@ -63,8 +69,8 @@ public:
     float GetAngularVelocity() const;
     void SetAngularVelocity(float a_vel);
 
-    Entity(ENTITY_TYPE type);
-    Entity(ENTITY_TYPE type, Vector2 pos, Vector2 vel, float rot, float a_vel);
+    Entity(ENTITY_TYPE type, std::string name = "");
+    Entity(ENTITY_TYPE type, Vector2 pos, Vector2 vel, float rot, float a_vel, std::string name = "");
     virtual ~Entity() = default;
 
     ENTITY_TYPE GetType() { return type_; }
@@ -81,9 +87,11 @@ public:
 
 
 class Craft : public Entity {
+    friend class ShipyardModule;
+
 public:
     Craft();
-    Craft(Vector2 pos);
+    Craft(Vector2 pos, std::string name = "Craft");
     ~Craft() override;
 
     std::vector<Module*> GetModules();
@@ -93,6 +101,8 @@ public:
     void LaunchScript(std::string filename);
     bool IsScriptRunning();
     void SendEvent(const boost::json::object& event_data);
+    float GetMass() { return mass_; }
+    void RecalculateMass();
 
     void Update(float delta_time) override;
 
@@ -102,8 +112,12 @@ public:
 private:
     std::size_t module_index_;
 
+    float mass_ = 0;
+
     std::vector<std::unique_ptr<Module>> modules_;
 
+    void RecalculateMassLocked(); // Requires state_mutex_ to be held.
+    Module& AddModuleLocked(MODULE_TYPE type); // Requires state_mutex_ to be held.
     void Send(const boost::json::object& message);
     void StopScript();
     void ReadPacket();
@@ -128,7 +142,7 @@ class Asteroid : public Entity
     std::unordered_map<RESOURCE_TYPE, std::size_t> resources_;
 public:
     Asteroid();
-    Asteroid(Vector2 pos);
+    Asteroid(Vector2 pos, std::string name = "Asteroid");
     ~Asteroid() override = default;
 
     std::unordered_map<RESOURCE_TYPE, std::size_t>& GetResources() { return resources_; }
@@ -143,6 +157,7 @@ class World
     std::size_t next_id_ = 1;
     std::unordered_map<std::size_t, std::unique_ptr<Entity>> entities_;
     std::unordered_set<std::size_t> pending_destroy_;
+    std::vector<std::unique_ptr<Entity>> pending_spawn_;
     bool updating_ = false;
 
 public:
