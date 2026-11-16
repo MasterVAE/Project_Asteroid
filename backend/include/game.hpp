@@ -93,6 +93,7 @@ public:
 
 class Craft : public Entity {
     friend class ShipyardModule;
+    friend class World;
 
 public:
     Craft();
@@ -118,6 +119,7 @@ private:
     std::unordered_map<MODULE_TYPE, std::size_t> module_indices_;
 
     float mass_ = 0;
+    std::string script_data; // Protected by state_mutex_; persisted with the world.
 
     std::vector<std::unique_ptr<Module>> modules_;
 
@@ -136,6 +138,7 @@ private:
     boost::asio::streambuf read_buffer_;
     std::deque<std::string> outgoing_;
     bool stopping_ = true; // Protected by send_mutex_.
+    std::string script_path_; // Last attached script; protected by send_mutex_.
     bool close_stdin_when_idle_ = false; // Accessed only by the I/O thread.
 
     std::thread reader_;
@@ -167,13 +170,14 @@ class World
 
 public:
     World();
-    World(std::string filename);
 
     void SpawnEntity(std::unique_ptr<Entity> entity);
     void DestroyEntity(Entity* entity);
 
     void Start();
     void Restart();
+    void Load(std::string filename);
+    void Save(std::string filename);
 
     std::unordered_map<std::size_t, std::unique_ptr<Entity>>& GetEntities() { return entities_; }
 

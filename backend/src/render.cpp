@@ -221,6 +221,14 @@ struct CraftInterfaceState
 
 struct InterfaceState
 {
+    bool main_menu = true;
+    bool has_active_game = false;
+    bool fullscreen = false;
+    sf::Vector2u windowed_size{800, 600};
+    sf::Vector2i windowed_position;
+    sf::String save_path;
+    std::size_t save_cursor = 0;
+    bool save_editing = false;
     std::optional<std::size_t> selected;
     sf::String script_path;
     std::size_t cursor = 0;
@@ -354,7 +362,7 @@ sf::FloatRect ClearConsoleBounds(const sf::RenderWindow& window)
             {88.0f, 24.0f}};
 }
 
-sf::FloatRect RestartGameBounds(const sf::RenderWindow& window)
+sf::FloatRect MainMenuButtonBounds(const sf::RenderWindow& window)
 {
     return {{std::max(SidebarWidth(window) + 12.0f,
                      static_cast<float>(window.getSize().x) - 202.0f), 6.0f}, {190.0f, 26.0f}};
@@ -382,9 +390,18 @@ void ZoomCamera(sf::RenderWindow& window, float factor)
     ui.camera_zoom = zoom;
 }
 
-void RestartGame(sf::RenderWindow& window, World* world)
+void ReturnToMainMenu()
 {
-    world->Restart();
+    auto& ui = Interface();
+    ui.main_menu = true;
+    ui.has_active_game = true;
+    ui.save_editing = false;
+    ui.editing = false;
+    ui.console_editing = false;
+}
+
+void ResetWorldInterface(sf::RenderWindow& window)
+{
     auto& ui = Interface();
     ui.selected.reset();
     ui.crafts.clear();
@@ -397,6 +414,7 @@ void RestartGame(sf::RenderWindow& window, World* world)
     ui.console_history.clear();
     ui.history_index = 0;
     ui.console_draft.clear();
+    ui.save_editing = false;
     stderr_log.Clear();
     ui.log_rows.clear();
     ui.log_scroll = 0;
@@ -406,6 +424,15 @@ void RestartGame(sf::RenderWindow& window, World* world)
     sf::View view(sf::FloatRect({0.0f, 0.0f}, sf::Vector2f(window.getSize())));
     view.setCenter({0.0f, 0.0f});
     window.setView(view);
+}
+
+void StartNewGame(sf::RenderWindow& window, World* world)
+{
+    world->Restart();
+    ResetWorldInterface(window);
+    auto& ui = Interface();
+    ui.has_active_game = true;
+    ui.main_menu = false;
 }
 
 void LaunchSelectedScript(World* world, bool restart)
@@ -482,23 +509,25 @@ void EditInput(const sf::Event::KeyPressed& key, sf::String& value, std::size_t&
 }
 
 void DrawInput(sf::RenderWindow& window, const sf::FloatRect& bounds, const sf::String& value,
-               std::size_t cursor, bool editing, sf::Color color)
+               std::size_t cursor, bool editing, sf::Color color,
+               unsigned int character_size = text_size, sf::Vector2f padding = {8.0f, 5.0f})
 {
     sf::String visible = value;
     if (editing) visible.insert(cursor, "|");
-    sf::Text input(*Interface().font, visible, text_size);
+    sf::Text input(*Interface().font, visible, character_size);
     std::size_t first = 0;
     while (first < cursor &&
-           input.findCharacterPos(cursor - first + (editing ? 1 : 0)).x > bounds.size.x - 16.0f) {
+           input.findCharacterPos(cursor - first + (editing ? 1 : 0)).x > bounds.size.x - 2.0f * padding.x) {
         visible.erase(0, 1);
         ++first;
         input.setString(visible);
     }
-    while (!visible.isEmpty() && input.getLocalBounds().size.x > bounds.size.x - 16.0f) {
+    while (!visible.isEmpty() && input.getLocalBounds().size.x > bounds.size.x - 2.0f * padding.x) {
         visible.erase(visible.getSize() - 1, 1);
         input.setString(visible);
     }
-    input.setPosition(bounds.position + sf::Vector2f(8.0f, 5.0f));
+    input.setPosition({std::round(bounds.position.x + padding.x),
+                       std::round(bounds.position.y + padding.y)});
     input.setFillColor(color);
     window.draw(input);
 }
@@ -518,6 +547,180 @@ void LoadInterfaceFont()
     }
     ui.font.reset();
     std::cerr << "Cannot load a system font for the script field and console\n";
+}
+
+float MainMenuScale(const sf::RenderWindow& window)
+{
+    const auto size = sf::Vector2f(window.getSize());
+    return std::max(0.001f, std::min(size.x / 800.0f, size.y / 600.0f));
+}
+
+sf::View MainMenuView(const sf::RenderWindow& window)
+{
+    // Keep one view unit equal to one pixel; rasterize glyphs at their final size.
+    return sf::View(sf::FloatRect({0.0f, 0.0f}, sf::Vector2f(window.getSize())));
+}
+
+struct MainMenuLayout
+{
+    sf::FloatRect panel;
+    sf::FloatRect fullscreen;
+    sf::FloatRect start;
+    sf::FloatRect resume;
+    sf::FloatRect path;
+    sf::FloatRect load;
+    sf::FloatRect save;
+    sf::FloatRect exit;
+};
+
+MainMenuLayout MainMenuBounds(const sf::RenderWindow& window)
+{
+    const auto size = sf::Vector2f(window.getSize());
+    const float scale = MainMenuScale(window);
+    const float resume_height = Interface().has_active_game ? 52.0f : 0.0f;
+    const sf::Vector2f origin = (size - sf::Vector2f(440.0f, 410.0f + resume_height) * scale) / 2.0f;
+    const auto rectangle = [&](float x, float y, float width, float height) {
+        return sf::FloatRect({std::round(origin.x + x * scale), std::round(origin.y + y * scale)},
+                             {std::round(width * scale), std::round(height * scale)});
+    };
+    return {
+        rectangle(0.0f, 0.0f, 440.0f, 410.0f + resume_height),
+        rectangle(24.0f, 82.0f, 392.0f, 40.0f),
+        rectangle(24.0f, 134.0f, 392.0f, 44.0f),
+        rectangle(24.0f, 186.0f, 392.0f, 44.0f),
+        rectangle(24.0f, 226.0f + resume_height, 392.0f, 32.0f),
+        rectangle(24.0f, 274.0f + resume_height, 190.0f, 44.0f),
+        rectangle(226.0f, 274.0f + resume_height, 190.0f, 44.0f),
+        rectangle(24.0f, 326.0f + resume_height, 392.0f, 44.0f)
+    };
+}
+
+void ToggleFullscreen(sf::RenderWindow& window)
+{
+    auto& ui = Interface();
+    const auto view = window.getView();
+    if (!ui.fullscreen) {
+        ui.windowed_size = window.getSize();
+        ui.windowed_position = window.getPosition();
+    }
+    ui.fullscreen = !ui.fullscreen;
+    ui.save_editing = false;
+    ui.font.reset();
+    window.create(ui.fullscreen ? sf::VideoMode::getDesktopMode() : sf::VideoMode(ui.windowed_size),
+                  "PROJECT ASTEROID", sf::Style::Default,
+                  ui.fullscreen ? sf::State::Fullscreen : sf::State::Windowed);
+    if (!ui.fullscreen) window.setPosition(ui.windowed_position);
+    window.setFramerateLimit(60);
+    auto resized_view = view;
+    resized_view.setSize(sf::Vector2f(window.getSize()) * ui.camera_zoom);
+    window.setView(resized_view);
+    LoadInterfaceFont();
+}
+
+void LoadGameFromMenu(sf::RenderWindow& window, World* world)
+{
+    auto& ui = Interface();
+    if (ui.save_path.isEmpty()) return;
+    const auto utf8 = ui.save_path.toUtf8();
+    world->Load(std::string(utf8.begin(), utf8.end()));
+    ResetWorldInterface(window);
+    ui.has_active_game = true;
+    ui.main_menu = false;
+}
+
+void SaveGameFromMenu(World* world)
+{
+    const auto& ui = Interface();
+    if (!ui.has_active_game || ui.save_path.isEmpty()) return;
+    const auto utf8 = ui.save_path.toUtf8();
+    world->Save(std::string(utf8.begin(), utf8.end()));
+}
+
+void HandleMainMenuEvent(sf::RenderWindow& window, World* world, const sf::Event& event)
+{
+    auto& ui = Interface();
+    if (const auto* mouse = event.getIf<sf::Event::MouseButtonPressed>()) {
+        if (mouse->button != sf::Mouse::Button::Left) return;
+        const auto point = window.mapPixelToCoords(mouse->position, MainMenuView(window));
+        const auto bounds = MainMenuBounds(window);
+        ui.save_editing = bounds.path.contains(point);
+        if (ui.save_editing) ui.save_cursor = ui.save_path.getSize();
+        else if (bounds.fullscreen.contains(point)) ToggleFullscreen(window);
+        else if (bounds.start.contains(point)) StartNewGame(window, world);
+        else if (ui.has_active_game && bounds.resume.contains(point)) ui.main_menu = false;
+        else if (bounds.load.contains(point)) LoadGameFromMenu(window, world);
+        else if (bounds.save.contains(point)) SaveGameFromMenu(world);
+        else if (bounds.exit.contains(point)) CloseWindow(window);
+    }
+    else if (const auto* key = event.getIf<sf::Event::KeyPressed>()) {
+        if (key->code == sf::Keyboard::Key::Escape) ui.save_editing = false;
+        else if (ui.save_editing) {
+            if (key->code == sf::Keyboard::Key::Enter) LoadGameFromMenu(window, world);
+            else EditInput(*key, ui.save_path, ui.save_cursor);
+        }
+    }
+    else if (const auto* text = event.getIf<sf::Event::TextEntered>()) {
+        if (!ui.save_editing) return;
+        if (text->unicode == U'\b') {
+            if (ui.save_cursor > 0) ui.save_path.erase(--ui.save_cursor, 1);
+        }
+        else if (text->unicode >= U' ' && text->unicode != 127) {
+            ui.save_path.insert(ui.save_cursor++, sf::String(text->unicode));
+        }
+    }
+}
+
+void DrawMainMenu(sf::RenderWindow& window)
+{
+    auto& ui = Interface();
+    if (!ui.font || window.getSize().x == 0 || window.getSize().y == 0) return;
+    const auto world_view = window.getView();
+    const auto menu_view = MainMenuView(window);
+    const auto bounds = MainMenuBounds(window);
+    const float scale = MainMenuScale(window);
+    const auto font_size = [scale](unsigned int size) {
+        return static_cast<unsigned int>(std::max(1.0f, std::round(size * scale)));
+    };
+    window.setView(menu_view);
+    const auto panel = [&](const sf::FloatRect& rectangle, sf::Color color) {
+        sf::RectangleShape shape(rectangle.size);
+        shape.setPosition(rectangle.position);
+        shape.setFillColor(color);
+        window.draw(shape);
+    };
+    const auto button = [&](const sf::FloatRect& rectangle, const sf::String& title, bool enabled = true) {
+        const bool hovered = enabled && window.hasFocus() && rectangle.contains(
+            window.mapPixelToCoords(sf::Mouse::getPosition(window), menu_view));
+        panel(rectangle, !enabled ? sf::Color(30, 34, 40)
+                                 : hovered ? sf::Color(65, 85, 105) : sf::Color(42, 54, 68));
+        sf::Text text(*ui.font, title, font_size(18));
+        const auto local = text.getLocalBounds();
+        const auto position = rectangle.position + (rectangle.size - local.size) / 2.0f - local.position;
+        text.setPosition({std::round(position.x), std::round(position.y)});
+        text.setFillColor(enabled ? sf::Color::White : sf::Color(120, 130, 145));
+        window.draw(text);
+    };
+    panel(bounds.panel, sf::Color(20, 24, 30));
+    sf::Text title(*ui.font, "PROJECT ASTEROID", font_size(26));
+    const auto title_bounds = title.getLocalBounds();
+    title.setPosition({std::round(bounds.panel.position.x + (bounds.panel.size.x - title_bounds.size.x) / 2.0f -
+                                     title_bounds.position.x),
+                       std::round(bounds.panel.position.y + 24.0f * scale)});
+    window.draw(title);
+    button(bounds.fullscreen, ui.fullscreen ? sf::String(U"В оконный режим") : sf::String(U"На весь экран"));
+    button(bounds.start, sf::String(U"Начать новую игру"));
+    if (ui.has_active_game) button(bounds.resume, sf::String(U"Вернуться в игру"));
+    sf::Text label(*ui.font, sf::String(U"Путь к файлу сохранения"), font_size(text_size));
+    label.setPosition({bounds.path.position.x, std::round(bounds.path.position.y - 24.0f * scale)});
+    label.setFillColor(sf::Color(180, 190, 205));
+    window.draw(label);
+    panel(bounds.path, ui.save_editing ? sf::Color(46, 61, 75) : sf::Color(35, 40, 48));
+    DrawInput(window, bounds.path, ui.save_path, ui.save_cursor, ui.save_editing, sf::Color::White,
+              font_size(text_size), sf::Vector2f(8.0f, 5.0f) * scale);
+    button(bounds.load, sf::String(U"Загрузить игру"), !ui.save_path.isEmpty());
+    button(bounds.save, sf::String(U"Сохранить игру"), ui.has_active_game && !ui.save_path.isEmpty());
+    button(bounds.exit, sf::String(U"Выйти из игры"));
+    window.setView(world_view);
 }
 
 void DrawInterface(sf::RenderWindow& window, World* world)
@@ -586,7 +789,7 @@ void DrawInterface(sf::RenderWindow& window, World* world)
         panel({{sidebar_width, 0.0f}, {size.x - sidebar_width, 116.0f}}, sf::Color(20, 24, 30, 245));
         fitted_label(EntityLabel(entity) +
                   (craft ? " | Script path (Enter to launch)" : " | This entity cannot run scripts"),
-              {bounds.position.x, 12.0f}, RestartGameBounds(window).position.x - bounds.position.x - 12.0f,
+              {bounds.position.x, 12.0f}, MainMenuButtonBounds(window).position.x - bounds.position.x - 12.0f,
               sf::Color::White);
         panel(bounds, ui.editing ? sf::Color(46, 61, 75) : sf::Color(35, 40, 48));
         DrawInput(window, bounds, ui.script_path, ui.cursor, ui.editing,
@@ -600,7 +803,7 @@ void DrawInterface(sf::RenderWindow& window, World* world)
                   running ? sf::Color(110, 220, 140) : sf::Color(160, 170, 185));
         }
     }
-    button(RestartGameBounds(window), "Restart game");
+    button(MainMenuButtonBounds(window), sf::String(U"В главное меню"));
     button(ZoomBounds(window, true), "+", ui.camera_zoom > 0.1f);
     button(ZoomBounds(window, false), "-", ui.camera_zoom < 8.0f);
 
@@ -651,6 +854,11 @@ void DrawInterface(sf::RenderWindow& window, World* world)
 }
 } // namespace
 
+bool IsMainMenuOpen()
+{
+    return Interface().main_menu;
+}
+
 sf::RenderWindow CreateGameWindow()
 {
     sf::RenderWindow window(sf::VideoMode({800, 600}), "PROJECT ASTEROID");
@@ -686,6 +894,11 @@ void HandleEvents(sf::RenderWindow& window, World* world)
         else if (event->is<sf::Event::FocusLost>()) {
             ui.editing = false;
             ui.console_editing = false;
+            ui.save_editing = false;
+        }
+        else if (ui.main_menu) {
+            HandleMainMenuEvent(window, world, *event);
+            if (!window.isOpen()) return;
         }
         else if (const auto* mouse = event->getIf<sf::Event::MouseButtonPressed>()) {
             if (mouse->button != sf::Mouse::Button::Left) continue;
@@ -703,8 +916,8 @@ void HandleEvents(sf::RenderWindow& window, World* world)
                 continue;
             }
             ui.console_editing = false;
-            if (RestartGameBounds(window).contains(point)) {
-                RestartGame(window, world);
+            if (MainMenuButtonBounds(window).contains(point)) {
+                ReturnToMainMenu();
                 camera_clock.restart();
                 continue;
             }
@@ -806,7 +1019,7 @@ void HandleEvents(sf::RenderWindow& window, World* world)
         }
     }
 
-    if (!window.isOpen() || !window.hasFocus() || ui.editing || ui.console_editing || ui.selected) {
+    if (ui.main_menu || !window.isOpen() || !window.hasFocus() || ui.editing || ui.console_editing || ui.selected) {
         return;
     }
 
@@ -829,6 +1042,12 @@ void Render(sf::RenderWindow& window, World* world)
 {
     if (!window.isOpen()) return;
     auto& ui = Interface();
+    if (ui.main_menu) {
+        window.clear(sf::Color(10, 14, 20));
+        DrawMainMenu(window);
+        window.display();
+        return;
+    }
     for (auto it = ui.crafts.begin(); it != ui.crafts.end();) {
         if (world->GetEntities().find(it->first) == world->GetEntities().end())
             it = ui.crafts.erase(it);

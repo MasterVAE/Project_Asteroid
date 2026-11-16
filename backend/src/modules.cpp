@@ -687,8 +687,17 @@ void FactoryModel::Update(float delta_time)
 boost::json::object FactoryModel::Handle(boost::json::object request)
 {
     const auto method = boost::json::value_to<std::string>(request.at("method"));
-    if (method == "get_recipes")
+    if (method == "get_recipes" || method == "get_queue")
     {
+        std::vector<RECIPE> recipes;
+        if (method == "get_queue")
+        {
+            std::lock_guard lock(parent_->state_mutex_);
+            recipes.assign(queue_.begin(), queue_.end());
+        }
+        else
+            recipes = GetRecipes();
+
         const auto resource_name = [](RESOURCE_TYPE resource) -> const std::string& {
             const auto* data = std::find_if(RESOURCES, RESOURCES + RESOURCES_COUNT,
                 [resource](const RESOURCE_DATA& entry) { return entry.type == resource; });
@@ -698,8 +707,8 @@ boost::json::object FactoryModel::Handle(boost::json::object request)
         };
 
         boost::json::array result;
-        result.reserve(GetRecipes().size());
-        for (const auto& recipe : GetRecipes())
+        result.reserve(recipes.size());
+        for (const auto& recipe : recipes)
         {
             boost::json::array input;
             boost::json::array output;
@@ -853,7 +862,30 @@ void ShipyardModule::Update(float delta_time)
 boost::json::object ShipyardModule::Handle(boost::json::object request)
 {
     const auto method = boost::json::value_to<std::string>(request.at("method"));
-    if (method == "construct_craft")
+    if (method == "get_queue")
+    {
+        boost::json::array result;
+        {
+            std::lock_guard lock(parent_->state_mutex_);
+            result.reserve(queue_.size());
+            for (const auto& order : queue_)
+            {
+                boost::json::object entry{{"output", "craft"}, {"craft_id", nullptr}};
+                if (order.type != MODULE_TYPE::NONE)
+                {
+                    const auto* module = std::find_if(MODULES_DATA, MODULES_DATA + MODULES_COUNT,
+                        [&order](const MODULE_DATA& data) { return data.type == order.type; });
+                    if (module == MODULES_DATA + MODULES_COUNT)
+                        throw std::logic_error("Unknown module in shipyard queue");
+                    entry["output"] = module->name;
+                    entry["craft_id"] = order.craft_id;
+                }
+                result.push_back(std::move(entry));
+            }
+        }
+        return {{"type", "response"}, {"id", request.at("id")}, {"result", result}};
+    }
+    else if (method == "construct_craft")
     {
         ConstructCraft();
     }

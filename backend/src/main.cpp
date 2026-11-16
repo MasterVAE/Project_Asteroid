@@ -7,7 +7,8 @@
 
 int main(int argc, char* argv[]) {
 
-    World* world = argc < 2 ? new World() : new World(argv[1]);
+    World* world = new World();
+    if (argc >= 2) world->Load(argv[1]);
 
     sf::Clock clock;
 
@@ -17,7 +18,7 @@ int main(int argc, char* argv[]) {
         float delta_time = clock.restart().asSeconds();
 
         HandleEvents(window, world);
-        world->Update(delta_time);
+        if (window.isOpen() && !IsMainMenuOpen()) world->Update(delta_time);
 
         Render(window, world);
     }

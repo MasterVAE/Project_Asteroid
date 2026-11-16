@@ -51,9 +51,10 @@ public:
 
 class PropulsionModule : public Module
 {
+    friend class World;
     float max_thrust_ = 500;
     float throttle_ = 0;
-    float fuel_consumption_per_second_ = 10;
+    float fuel_consumption_per_second_ = 1;
 public:
     PropulsionModule(Craft* parent) : Module(parent, MODULE_TYPE::PROPULSION, "") {}
 
@@ -68,6 +69,7 @@ public:
 
 class StorageModule : public Module
 {
+    friend class World;
     std::size_t capacity_ = 20;
     std::unordered_map<RESOURCE_TYPE, std::size_t> inventory_;
     bool ready_to_recieve_ = false;
@@ -92,6 +94,7 @@ public:
 
 class RCSModule : public Module
 {
+    friend class World;
     float max_gyro_ = 100;
     float gyro_ = 0;
     float max_thrust_ = 30;
@@ -110,6 +113,7 @@ public:
 
 class DrillModule : public Module
 {
+    friend class World;
     float drill_cooldown_ = 0.5;
     float timer_ = 0;
     bool enabled_ = false;
@@ -129,6 +133,7 @@ public:
 
 class ScanModule : public Module
 {
+    friend class World;
     float radius = 500;
     float scan_power_ = 30;
 
@@ -153,6 +158,7 @@ public:
 
 class PowerModule : public Module
 {
+    friend class World;
     friend class FactoryModel;
     friend class ShipyardModule;
 
@@ -174,6 +180,7 @@ public:
 
 class FactoryModel : public Module
 {
+    friend class World;
     float production_cooldown_ = 3;
     float energy_consuption_per_second_ = 20;
     float time_ = 0;
@@ -193,6 +200,7 @@ public:
 
 class ShipyardModule : public Module
 {
+    friend class World;
     struct Order
     {
         std::size_t craft_id;
@@ -217,6 +225,7 @@ public:
 
 class FuelTankModule : public Module
 {
+    friend class World;
     friend class PropulsionModule;
 
     float capacity_ = 100;

@@ -195,6 +195,12 @@ def setName(name):
         raise ValueError("Craft name must be a non-empty string")
     command("set_name", value=name)
 
+def saveData(data):
+    """Сохраняет строку в корабле; при запуске скрипта она приходит событием load_data."""
+    if not isinstance(data, str):
+        raise ValueError("Script data must be a string")
+    command("save_data", value=data)
+
 def getPos(timeout=2.0) -> tuple:
     """Возвращает мировые координаты корабля как (x, y)."""
     result = _request("get_position", timeout=timeout)
@@ -354,6 +360,10 @@ class Factory:
         """Возвращает все рецепты с input/output; индекс в списке используется в produce."""
         return _request("get_recipes", module=self.name, timeout=timeout)
 
+    def getQueue(self, timeout=2.0) -> list:
+        """Очередь рецептов с input/output в порядке выполнения, включая текущий заказ."""
+        return _request("get_queue", module=self.name, timeout=timeout)
+
     def produce(self, index):
         """Добавляет одну операцию по рецепту с указанным индексом в очередь завода."""
         if isinstance(index, bool) or not isinstance(index, int) or index < 0:
@@ -370,6 +380,10 @@ class Shipyard:
     def getRecipes(self, timeout=2.0) -> list:
         """Рецепты верфи: input — список ресурсов, output — craft или имя типа модуля."""
         return _request("get_recipes", module=self.name, timeout=timeout)
+
+    def getQueue(self, timeout=2.0) -> list:
+        """Очередь заказов с output и craft_id (None для нового корабля), включая текущий."""
+        return _request("get_queue", module=self.name, timeout=timeout)
 
     def constructCraft(self):
         """Ставит строительство пустого корабля в очередь; команда без подтверждения."""

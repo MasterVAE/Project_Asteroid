@@ -14,6 +14,7 @@
 #include <system_error>
 #include <chrono>
 #include <cmath>
+#include <filesystem>
 #include <iostream>
 #include <mutex>
 #include <stdexcept>
@@ -60,7 +61,6 @@ Vector2 RandomVector(float min, float max)
 World::World() {
     Start();
 }
-World::World(std::string /*filename*/) {}
 
 void World::Start() {
     auto shipyard = std::make_unique<Craft>(Vector2(0, 0), "Shipyard");
@@ -101,6 +101,7 @@ void World::Restart() {
     next_id_ = 0;
     Start();
 }
+
 
 void World::Update(float delta_time) {
     updating_ = true;
@@ -410,6 +411,7 @@ void Craft::LaunchScript(std::string filename)
     StopScript();
 
     try {
+        const auto script_path = std::filesystem::absolute(std::filesystem::u8path(filename)).u8string();
         auto python = bp::environment::find_executable("python3");
 #ifdef _WIN32
         if (python.empty()) python = bp::environment::find_executable("python");
@@ -443,6 +445,12 @@ void Craft::LaunchScript(std::string filename)
         {
             std::lock_guard lock(send_mutex_);
             stopping_ = false;
+            script_path_ = script_path;
+        }
+        {
+            std::lock_guard lock(state_mutex_);
+            // Queue restoration before the reader can process commands from the new script.
+            SendEvent({{"type", "event"}, {"name", "load_data"}, {"data", script_data}});
         }
         reader_ = std::thread([this] { io_.run(); });
     } catch (const std::exception& e) {
@@ -639,6 +647,12 @@ void Craft::HandlePacket(const std::string& line)
             const auto method = json::value_to<std::string>(msg.at("method"));
             if (method == "set_name")
                 SetName(json::value_to<std::string>(msg.at("value")));
+            else if (method == "save_data")
+            {
+                const auto data = json::value_to<std::string>(msg.at("value"));
+                std::lock_guard lock(state_mutex_);
+                script_data = data;
+            }
         }
 
     } catch (const std::exception& e) {
@@ -659,6 +673,7 @@ void Craft::StopScript()
     {
         std::lock_guard lock(send_mutex_);
         stopping_ = true;
+        script_path_.clear();
     }
     if (!process_) return;
 

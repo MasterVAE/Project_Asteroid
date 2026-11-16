@@ -21,7 +21,7 @@ include(cmake/Dependencies.cmake)
 find_package(Threads REQUIRED)
 
 add_executable(app backend/src/main.cpp backend/src/game.cpp
-    backend/src/modules.cpp backend/src/render.cpp)
+    backend/src/modules.cpp backend/src/render.cpp backend/src/saveload.cpp)
 target_include_directories(app PRIVATE backend/include)
 target_link_libraries(app PRIVATE SFML::Graphics SFML::Window SFML::System
     Boost::json Boost::filesystem Boost::process Threads::Threads)
