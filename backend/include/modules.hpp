@@ -20,10 +20,11 @@ enum MODULE_TYPE
     STORAGE,
     RCS,
     DRILL,
-    SCANER,
+    SCANNER,
     POWER,
     FACTORY,
-    SHIPYARD
+    SHIPYARD,
+    FUEL_TANK
 };
 
 class Module
@@ -51,11 +52,13 @@ public:
 
 class PropulsionModule : public Module
 {
-    float max_thrust_ = 100;
+    float max_thrust_ = 500;
     float throttle_ = 0;
+    float fuel_consumption_per_second_ = 10;
 public:
     PropulsionModule(Craft* parent) : Module(parent, MODULE_TYPE::PROPULSION, "") {}
 
+    float GetThrottle();
     void SetThrottle(float throttle);
 
     void Update(float delta_time) override;
@@ -90,9 +93,9 @@ public:
 
 class RCSModule : public Module
 {
-    float max_gyro_ = 1;
+    float max_gyro_ = 100;
     float gyro_ = 0;
-    float max_thrust_ = 10;
+    float max_thrust_ = 30;
     Vector2 thrust_;
 public:
     RCSModule(Craft* parent) : Module(parent, MODULE_TYPE::RCS, "") {}
@@ -111,7 +114,7 @@ class DrillModule : public Module
     float drill_cooldown_ = 0.5;
     float timer_ = 0;
     bool enabled_ = false;
-    float power_consuption_ = 5;
+    float power_consuption_ =10;
 public:
     DrillModule(Craft* parent) : Module(parent, MODULE_TYPE::DRILL, "") {}
 
@@ -131,7 +134,7 @@ class ScanModule : public Module
     float scan_power_ = 30;
 
 public:
-    ScanModule(Craft* parent) : Module(parent, MODULE_TYPE::SCANER, "") {}
+    ScanModule(Craft* parent) : Module(parent, MODULE_TYPE::SCANNER, "") {}
 
     struct Result
     {
@@ -142,6 +145,7 @@ public:
     };
 
     std::vector<Result> Scan();
+    void Signal(std::size_t id, const std::string& message);
 
     void Update(float delta_time) override;
 
@@ -175,14 +179,14 @@ class FactoryModel : public Module
     float energy_consuption_per_second_ = 20;
     float time_ = 0;
 
-    std::deque<RECIPIE> queue_;
+    std::deque<RECIPE> queue_;
 
 public:
     FactoryModel(Craft* parent) : Module(parent, MODULE_TYPE::FACTORY, "") {}
 
-    const std::vector<RECIPIE>& GetRecipies() const;
+    const std::vector<RECIPE>& GetRecipes() const;
 
-    void Produce(RECIPIE recipie);
+    void Produce(RECIPE recipe);
     void Update(float delta_time) override;
 
     boost::json::object Handle(boost::json::object request) override;
@@ -212,6 +216,25 @@ public:
     boost::json::object Handle(boost::json::object request) override;
 };
 
+class FuelTankModule : public Module
+{
+    friend class PropulsionModule;
+
+    float capacity_ = 100;
+    float fuel_ = 0;
+    float fuel_per_object_ = 20; 
+    bool GetFuelLocked(float fuel); // Requires the craft state mutex.
+public:
+    FuelTankModule(Craft* parent) : Module(parent, MODULE_TYPE::FUEL_TANK, "") {}
+
+    void SetFuel(float fuel);
+
+    bool GetFuel(float fuel);
+
+    void Update(float delta_time) override;
+    boost::json::object Handle(boost::json::object request) override;
+};
+
 struct MODULE_DATA
 {
     MODULE_TYPE type;
@@ -225,10 +248,11 @@ static const MODULE_DATA MODULES_DATA[] =
     {STORAGE, "storage", 7},
     {RCS, "rcs", 5},
     {DRILL, "drill", 15},
-    {SCANER, "scaner", 5},
+    {SCANNER, "scanner", 5},
     {POWER, "power", 20},
     {FACTORY, "factory", 20},
-    {SHIPYARD, "shipyard", 50}
+    {SHIPYARD, "shipyard", 50},
+    {FUEL_TANK, "fuel_tank", 5}
 };
 
 static const std::size_t MODULES_COUNT = sizeof(MODULES_DATA)/sizeof(MODULES_DATA[0]);
@@ -236,29 +260,30 @@ static const std::size_t MODULES_COUNT = sizeof(MODULES_DATA)/sizeof(MODULES_DAT
 
 // Shipyard recipes create a craft or install a module, rather than produce
 // inventory items. Repeated input entries mean multiple units of a resource.
-struct CONSTRUCTION_RECIPIE
+struct CONSTRUCTION_RECIPE
 {
     std::vector<RESOURCE_TYPE> input;
     MODULE_TYPE output;
 };
 
-// An empty craft; modules are installed separately using MODULE_RECIPIES.
-inline const CONSTRUCTION_RECIPIE CRAFT_RECIPIE
+// An empty craft; modules are installed separately using MODULE_RECIPES.
+inline const CONSTRUCTION_RECIPE CRAFT_RECIPE
 {
-    {IRON_PLATE, IRON_PLATE, CIRCUIT_BOARD}, MODULE_TYPE::NONE
+    {STEEL}, MODULE_TYPE::NONE
 };
 
-// Output names match MODULES_DATA, including the existing spelling "scaner".
-inline const CONSTRUCTION_RECIPIE MODULE_RECIPIES[] =
+// Output names match MODULES_DATA, including the existing spelling "scanner".
+inline const CONSTRUCTION_RECIPE MODULE_RECIPES[] =
 {
-    {{IRON_PLATE, PIPE, PIPE, CIRCUIT_BOARD},                   MODULE_TYPE::PROPULSION},
-    {{IRON_PLATE, IRON_PLATE},                                  MODULE_TYPE::STORAGE},
-    {{IRON_PLATE, PIPE, COPPER_WIRE},                           MODULE_TYPE::RCS},
-    {{IRON_PLATE, GEAR, ELECTRIC_MOTOR},                        MODULE_TYPE::DRILL},
-    {{SILICON_WAFER, COPPER_WIRE, GLASS},                       MODULE_TYPE::SCANER},
-    {{SOLAR_CELL, BATTERY_CELL, COPPER_WIRE},                   MODULE_TYPE::POWER},
-    {{IRON_PLATE, GEAR, ELECTRIC_MOTOR, CIRCUIT_BOARD},         MODULE_TYPE::FACTORY},
-    {{IRON_PLATE, IRON_PLATE, ELECTRIC_MOTOR, CIRCUIT_BOARD},   MODULE_TYPE::SHIPYARD}
+    {{STEEL},                   MODULE_TYPE::PROPULSION},
+    {{STEEL},                                  MODULE_TYPE::STORAGE},
+    {{STEEL},                           MODULE_TYPE::RCS},
+    {{STEEL},                        MODULE_TYPE::DRILL},
+    {{STEEL},                       MODULE_TYPE::SCANNER},
+    {{STEEL},                   MODULE_TYPE::POWER},
+    {{STEEL},         MODULE_TYPE::FACTORY},
+    {{STEEL},   MODULE_TYPE::SHIPYARD},
+    {{STEEL},                                  MODULE_TYPE::FUEL_TANK}
 };
 
-static const std::size_t MODULE_RECIPIES_COUNT = sizeof(MODULE_RECIPIES)/sizeof(MODULE_RECIPIES[0]);
+static const std::size_t MODULE_RECIPES_COUNT = sizeof(MODULE_RECIPES)/sizeof(MODULE_RECIPES[0]);

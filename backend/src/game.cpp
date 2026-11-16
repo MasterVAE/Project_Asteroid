@@ -56,7 +56,12 @@ Vector2 RandomVector(float min, float max)
 
 
 // World
-World::World() : next_id_(0) {
+World::World() {
+    Start();
+}
+World::World(std::string /*filename*/) {}
+
+void World::Start() {
     auto shipyard = std::make_unique<Craft>(Vector2(0, 0), "Shipyard");
     shipyard->AddModule(MODULE_TYPE::SHIPYARD);
     shipyard->AddModule(MODULE_TYPE::FACTORY);
@@ -75,8 +80,10 @@ World::World() : next_id_(0) {
     miner->AddModule(MODULE_TYPE::STORAGE);
     miner->AddModule(MODULE_TYPE::RCS);
     miner->AddModule(MODULE_TYPE::DRILL);
-    miner->AddModule(MODULE_TYPE::SCANER);
+    miner->AddModule(MODULE_TYPE::SCANNER);
     miner->AddModule(MODULE_TYPE::POWER);
+    auto& fuel_tank = static_cast<FuelTankModule&>(miner->AddModule(MODULE_TYPE::FUEL_TANK));
+    fuel_tank.SetFuel(100);
     SpawnEntity(std::move(miner));
 
     for(int i = 0; i < 50; i++)
@@ -84,7 +91,15 @@ World::World() : next_id_(0) {
         SpawnEntity(std::make_unique<Asteroid>(RandomVector(-1000, 1000)));
     }
 }
-World::World(std::string /*filename*/) {}
+
+void World::Restart() {
+    entities_.clear();
+    pending_spawn_.clear();
+    pending_destroy_.clear();
+    updating_ = false;
+    next_id_ = 0;
+    Start();
+}
 
 void World::Update(float delta_time) {
     updating_ = true;
@@ -204,7 +219,7 @@ RESOURCE_TYPE Asteroid::Mine()
 // Craft
 Craft::Craft() : Craft(Vector2(0)) {}
 Craft::Craft(Vector2 pos, std::string name)
-    : Entity(ENTITY_TYPE::CRAFT, pos, Vector2(0), 0, 0, std::move(name)), module_index_(0) {}
+    : Entity(ENTITY_TYPE::CRAFT, pos, Vector2(0), 0, 0, std::move(name)) {}
 
 void Craft::RecalculateMass()
 {
@@ -281,7 +296,7 @@ Module& Craft::AddModuleLocked(MODULE_TYPE type)
     {
         mdl = std::make_unique<DrillModule>(this);
     }
-    else if(type == MODULE_TYPE::SCANER)
+    else if(type == MODULE_TYPE::SCANNER)
     {
         mdl = std::make_unique<ScanModule>(this);
     }
@@ -297,14 +312,20 @@ Module& Craft::AddModuleLocked(MODULE_TYPE type)
     {
         mdl = std::make_unique<ShipyardModule>(this);
     }
+    else if(type == MODULE_TYPE::FUEL_TANK)
+    {
+        mdl = std::make_unique<FuelTankModule>(this);
+    }
     else
     {
         throw std::invalid_argument("Unknown module type");
     }
 
-    name += "_" + std::to_string(module_index_++);
+    auto& next_index = module_indices_[type];
+    name += "_" + std::to_string(next_index);
     mdl->SetName(name);
     modules_.push_back(std::move(mdl));
+    ++next_index;
 
     RecalculateMassLocked();
 

@@ -110,7 +110,7 @@ public:
     std::mutex state_mutex_;
 
 private:
-    std::size_t module_index_;
+    std::unordered_map<MODULE_TYPE, std::size_t> module_indices_;
 
     float mass_ = 0;
 
@@ -154,7 +154,7 @@ public:
 
 class World
 {
-    std::size_t next_id_ = 1;
+    std::size_t next_id_ = 0;
     std::unordered_map<std::size_t, std::unique_ptr<Entity>> entities_;
     std::unordered_set<std::size_t> pending_destroy_;
     std::vector<std::unique_ptr<Entity>> pending_spawn_;
@@ -166,6 +166,9 @@ public:
 
     void SpawnEntity(std::unique_ptr<Entity> entity);
     void DestroyEntity(Entity* entity);
+
+    void Start();
+    void Restart();
 
     std::unordered_map<std::size_t, std::unique_ptr<Entity>>& GetEntities() { return entities_; }
 

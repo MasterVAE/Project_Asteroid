@@ -232,6 +232,10 @@ class Propulsion:
         """Возвращает максимальную силу тяги; ускорение равно силе / массе."""
         return float(_request("get_max_throttle", module=self.name, timeout=timeout)["max_throttle"])
 
+    def getFuelConsumption(self, timeout=2.0) -> float:
+        """Возвращает расход топлива в секунду при полной тяге."""
+        return float(_request("get_fuel_consumption", module=self.name, timeout=timeout)["fuel_consumption"])
+
     def throttle(self, value=1.0):
         command("set_throttle", module=self.name, value=value)
 
@@ -247,11 +251,11 @@ class Storage:
             for item in _request("get_storage", module=self.name, timeout=timeout)
         }
 
-    def readyForRecieve(self):
-        command("ready_for_recieve", module=self.name)
+    def readyToRecieve(self):
+        command("ready_to_recieve", module=self.name)
 
-    def notReadyForRecieve(self):
-        command("not_ready_for_recieve", module=self.name)
+    def notReadyToRecieve(self):
+        command("not_ready_to_recieve", module=self.name)
 
     def transfer(self, id, resource):
         command("transfer", module=self.name, value=(id, resource))
@@ -296,8 +300,8 @@ class Drill:
         command("disable", module=self.name)
 
 
-class Scaner:
-    name = "scaner"
+class Scanner:
+    name = "scanner"
 
     def __init__(self, name):
         self.name = name
@@ -305,6 +309,14 @@ class Scaner:
     def scan(self, timeout=2.0) -> list:
         """Объекты с полями id, name, type (craft/asteroid), x, y; без питания — []."""
         return _request("scan", module=self.name, timeout=timeout)
+
+    def signal(self, craft_id, message):
+        """Отправляет событие signal с sender_id и message обработчику @on('signal')."""
+        if isinstance(craft_id, bool) or not isinstance(craft_id, int) or craft_id < 0:
+            raise ValueError("Craft ID must be a non-negative integer")
+        if not isinstance(message, str):
+            raise ValueError("Signal message must be a string")
+        command("signal", module=self.name, value=(craft_id, message))
 
 
 class Power:
@@ -317,15 +329,30 @@ class Power:
         return float(_request("get_charge", module=self.name, timeout=timeout)["charge"])
 
 
+class FuelTank:
+    name = "tank"
+
+    def __init__(self, name):
+        self.name = name
+
+    def getMaxFuel(self, timeout=2.0) -> float:
+        """Возвращает вместимость топливного бака."""
+        return float(_request("get_max_fuel", module=self.name, timeout=timeout)["max_fuel"])
+
+    def getFuel(self, timeout=2.0) -> float:
+        """Возвращает текущий запас топлива в баке."""
+        return float(_request("get_fuel", module=self.name, timeout=timeout)["fuel"])
+
+
 class Factory:
     name = "factory"
 
     def __init__(self, name):
         self.name = name
 
-    def getRecipies(self, timeout=2.0) -> list:
+    def getRecipes(self, timeout=2.0) -> list:
         """Возвращает все рецепты с input/output; индекс в списке используется в produce."""
-        return _request("get_recipies", module=self.name, timeout=timeout)
+        return _request("get_recipes", module=self.name, timeout=timeout)
 
     def produce(self, index):
         """Добавляет одну операцию по рецепту с указанным индексом в очередь завода."""
@@ -340,9 +367,9 @@ class Shipyard:
     def __init__(self, name):
         self.name = name
 
-    def getRecipies(self, timeout=2.0) -> list:
+    def getRecipes(self, timeout=2.0) -> list:
         """Рецепты верфи: input — список ресурсов, output — craft или имя типа модуля."""
-        return _request("get_recipies", module=self.name, timeout=timeout)
+        return _request("get_recipes", module=self.name, timeout=timeout)
 
     def constructCraft(self):
         """Ставит строительство пустого корабля в очередь; команда без подтверждения."""

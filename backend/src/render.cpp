@@ -7,6 +7,7 @@
 #include <deque>
 #include <filesystem>
 #include <string>
+#include <unordered_map>
 #include <vector>
 
 #ifdef _WIN32
@@ -16,6 +17,7 @@
 #include <windows.h>
 #else
 #include <fcntl.h>
+#include <sys/stat.h>
 #include <unistd.h>
 #endif
 
@@ -169,6 +171,25 @@ public:
     }
 
     bool IsActive() const { return active_; }
+
+    void Clear()
+    {
+        if (active_) {
+            std::fflush(stderr);
+            // Skip unread output too, so a busy script cannot restore old rows.
+#ifdef _WIN32
+            LARGE_INTEGER distance{}, end{};
+            if (::SetFilePointerEx(reader_, distance, &end, FILE_END))
+                bytes_read_ = static_cast<std::size_t>(end.QuadPart);
+#else
+            struct stat info{};
+            if (::fstat(::fileno(file_), &info) == 0)
+                bytes_read_ = static_cast<std::size_t>(info.st_size);
+#endif
+        }
+        lines.assign(1, std::string{});
+    }
+
     std::deque<std::string> lines{std::string{}};
 
 private:
@@ -192,6 +213,12 @@ private:
 // World's constructor launches a script before CreateGameWindow is called.
 StderrLog stderr_log;
 
+struct CraftInterfaceState
+{
+    sf::String script_path;
+    sf::String launched_path;
+};
+
 struct InterfaceState
 {
     std::optional<std::size_t> selected;
@@ -211,6 +238,8 @@ struct InterfaceState
     std::size_t log_scroll = 0;
     std::size_t log_columns = 0;
     std::size_t entity_scroll = 0;
+    std::unordered_map<std::size_t, CraftInterfaceState> crafts;
+    float camera_zoom = 1.0f;
 };
 
 InterfaceState& Interface()
@@ -255,7 +284,12 @@ void SelectEntity(sf::RenderWindow& window, World* world, std::optional<std::siz
 {
     auto& ui = Interface();
     ui.console_editing = false;
-    if (selected != ui.selected) ui.script_path.clear();
+    if (selected != ui.selected) {
+        if (auto* craft = dynamic_cast<Craft*>(SelectedEntity(world)))
+            ui.crafts[craft->GetId()].script_path = ui.script_path;
+        ui.script_path = selected && dynamic_cast<Craft*>(world->GetEntities().at(*selected).get())
+            ? ui.crafts[*selected].script_path : sf::String{};
+    }
     ui.selected = selected;
     ui.cursor = ui.script_path.getSize();
     ui.editing = dynamic_cast<Craft*>(SelectedEntity(world)) != nullptr;
@@ -312,6 +346,82 @@ sf::FloatRect ConsoleInputBounds(const sf::RenderWindow& window)
 {
     return {{8.0f, std::max(LogTop(window), static_cast<float>(window.getSize().y) - 36.0f)},
             {std::max(1.0f, static_cast<float>(window.getSize().x) - 16.0f), 28.0f}};
+}
+
+sf::FloatRect ClearConsoleBounds(const sf::RenderWindow& window)
+{
+    return {{std::max(8.0f, static_cast<float>(window.getSize().x) - 96.0f), LogTop(window) + 3.0f},
+            {88.0f, 24.0f}};
+}
+
+sf::FloatRect RestartGameBounds(const sf::RenderWindow& window)
+{
+    return {{std::max(SidebarWidth(window) + 12.0f,
+                     static_cast<float>(window.getSize().x) - 202.0f), 6.0f}, {190.0f, 26.0f}};
+}
+
+sf::FloatRect RestartScriptBounds(const sf::RenderWindow& window)
+{
+    return {{SidebarWidth(window) + 12.0f, 78.0f}, {160.0f, 28.0f}};
+}
+
+sf::FloatRect ZoomBounds(const sf::RenderWindow& window, bool zoom_in)
+{
+    return {{std::max(SidebarWidth(window) + 12.0f,
+                     static_cast<float>(window.getSize().x) - 52.0f), zoom_in ? 130.0f : 174.0f},
+            {40.0f, 36.0f}};
+}
+
+void ZoomCamera(sf::RenderWindow& window, float factor)
+{
+    auto& ui = Interface();
+    const float zoom = std::clamp(ui.camera_zoom * factor, 0.1f, 8.0f);
+    auto view = window.getView();
+    view.zoom(zoom / ui.camera_zoom);
+    window.setView(view);
+    ui.camera_zoom = zoom;
+}
+
+void RestartGame(sf::RenderWindow& window, World* world)
+{
+    world->Restart();
+    auto& ui = Interface();
+    ui.selected.reset();
+    ui.crafts.clear();
+    ui.script_path.clear();
+    ui.cursor = 0;
+    ui.editing = false;
+    ui.console_input.clear();
+    ui.console_cursor = 0;
+    ui.console_editing = false;
+    ui.console_history.clear();
+    ui.history_index = 0;
+    ui.console_draft.clear();
+    stderr_log.Clear();
+    ui.log_rows.clear();
+    ui.log_scroll = 0;
+    ui.log_columns = 0;
+    ui.entity_scroll = 0;
+    ui.camera_zoom = 1.0f;
+    sf::View view(sf::FloatRect({0.0f, 0.0f}, sf::Vector2f(window.getSize())));
+    view.setCenter({0.0f, 0.0f});
+    window.setView(view);
+}
+
+void LaunchSelectedScript(World* world, bool restart)
+{
+    auto* craft = dynamic_cast<Craft*>(SelectedEntity(world));
+    if (!craft) return;
+    auto& ui = Interface();
+    auto& state = ui.crafts[craft->GetId()];
+    const sf::String path = restart && !state.launched_path.isEmpty()
+        ? state.launched_path : ui.script_path;
+    if (path.isEmpty()) return;
+    const auto utf8 = path.toUtf8();
+    craft->LaunchScript(std::string(utf8.begin(), utf8.end()));
+    state.script_path = ui.script_path = path;
+    ui.cursor = path.getSize();
+    if (craft->IsScriptRunning()) state.launched_path = path;
 }
 
 Craft* ConsoleTarget(World* world)
@@ -431,6 +541,27 @@ void DrawInterface(sf::RenderWindow& window, World* world)
         text.setFillColor(color);
         window.draw(text);
     };
+    const auto fitted_label = [&](sf::String value, sf::Vector2f position, float width, sf::Color color) {
+        sf::Text text(*ui.font, value, text_size);
+        while (!value.isEmpty() && text.getLocalBounds().size.x > width) {
+            value.erase(value.getSize() - 1, 1);
+            text.setString(value);
+        }
+        text.setPosition(position);
+        text.setFillColor(color);
+        window.draw(text);
+    };
+    const auto button = [&](sf::FloatRect bounds, const sf::String& title, bool enabled = true) {
+        const bool hovered = enabled && window.hasFocus() &&
+            bounds.contains(sf::Vector2f(sf::Mouse::getPosition(window)));
+        panel(bounds, !enabled ? sf::Color(30, 34, 40)
+                              : hovered ? sf::Color(65, 85, 105) : sf::Color(42, 54, 68));
+        sf::Text text(*ui.font, title, text_size);
+        const auto local = text.getLocalBounds();
+        text.setPosition(bounds.position + (bounds.size - local.size) / 2.0f - local.position);
+        text.setFillColor(enabled ? sf::Color::White : sf::Color(120, 130, 145));
+        window.draw(text);
+    };
 
     const float sidebar_width = SidebarWidth(window);
     panel({{0.0f, 0.0f}, {sidebar_width, LogTop(window)}}, sf::Color(20, 24, 30, 245));
@@ -448,26 +579,41 @@ void DrawInterface(sf::RenderWindow& window, World* world)
               {12.0f, y + 4.0f}, selected ? sf::Color(255, 215, 70) : sf::Color::White);
     }
 
+    panel({{sidebar_width, 0.0f}, {size.x - sidebar_width, 36.0f}}, sf::Color(20, 24, 30, 245));
     if (auto* entity = SelectedEntity(world)) {
-        const bool craft = dynamic_cast<Craft*>(entity) != nullptr;
+        auto* craft = dynamic_cast<Craft*>(entity);
         const auto bounds = InputBounds(window);
-        panel({{sidebar_width, 0.0f}, {size.x - sidebar_width, 82.0f}}, sf::Color(20, 24, 30, 245));
-        label(EntityLabel(entity) +
+        panel({{sidebar_width, 0.0f}, {size.x - sidebar_width, 116.0f}}, sf::Color(20, 24, 30, 245));
+        fitted_label(EntityLabel(entity) +
                   (craft ? " | Script path (Enter to launch)" : " | This entity cannot run scripts"),
-              {bounds.position.x, 12.0f}, sf::Color::White);
+              {bounds.position.x, 12.0f}, RestartGameBounds(window).position.x - bounds.position.x - 12.0f,
+              sf::Color::White);
         panel(bounds, ui.editing ? sf::Color(46, 61, 75) : sf::Color(35, 40, 48));
         DrawInput(window, bounds, ui.script_path, ui.cursor, ui.editing,
                   craft ? sf::Color::White : sf::Color(140, 140, 140));
+        if (craft) {
+            const bool running = craft->IsScriptRunning();
+            button(RestartScriptBounds(window), "Restart script",
+                   !ui.script_path.isEmpty() || !ui.crafts[craft->GetId()].launched_path.isEmpty());
+            label(running ? "Running" : "Stopped",
+                  {RestartScriptBounds(window).position.x + 172.0f, 83.0f},
+                  running ? sf::Color(110, 220, 140) : sf::Color(160, 170, 185));
+        }
     }
+    button(RestartGameBounds(window), "Restart game");
+    button(ZoomBounds(window, true), "+", ui.camera_zoom > 0.1f);
+    button(ZoomBounds(window, false), "-", ui.camera_zoom < 8.0f);
 
     const float top = LogTop(window);
     panel({{0.0f, top}, {size.x, size.y - top}}, sf::Color(18, 20, 25, 250));
     const auto* target = ConsoleTarget(world);
     const sf::String console_title = target ? sf::String("Console -> ") + EntityLabel(target)
                                             : sf::String("Console | Select a craft");
-    label(stderr_log.IsActive() ? console_title + " | Enter: send | Up/Down: history"
+    fitted_label(stderr_log.IsActive() ? console_title + " | Enter: send | Up/Down: history"
                                : "Console capture failed",
-          {12.0f, top + 6.0f}, sf::Color(180, 190, 205));
+          {12.0f, top + 6.0f}, ClearConsoleBounds(window).position.x - 24.0f,
+          sf::Color(180, 190, 205));
+    button(ClearConsoleBounds(window), "Clear");
     const auto columns = static_cast<std::size_t>(std::max(1.0f,
         (size.x - 24.0f) / ui.font->getGlyph(U'M', text_size, false).advance));
     if (log_changed || columns != ui.log_columns) {
@@ -513,6 +659,7 @@ sf::RenderWindow CreateGameWindow()
     sf::View view = window.getView();
     view.setCenter({0.0f, 0.0f});
     window.setView(view);
+    Interface().camera_zoom = 1.0f;
     return window;
 }
 
@@ -531,8 +678,8 @@ void HandleEvents(sf::RenderWindow& window, World* world)
         else if (const auto* resized = event->getIf<sf::Event::Resized>()) {
             if (resized->size.x > 0 && resized->size.y > 0) {
                 sf::View view = window.getView();
-                view.setSize({static_cast<float>(resized->size.x),
-                              static_cast<float>(resized->size.y)});
+                view.setSize({static_cast<float>(resized->size.x) * ui.camera_zoom,
+                              static_cast<float>(resized->size.y) * ui.camera_zoom});
                 window.setView(view);
             }
         }
@@ -543,6 +690,12 @@ void HandleEvents(sf::RenderWindow& window, World* world)
         else if (const auto* mouse = event->getIf<sf::Event::MouseButtonPressed>()) {
             if (mouse->button != sf::Mouse::Button::Left) continue;
             const auto point = sf::Vector2f(mouse->position);
+            if (ClearConsoleBounds(window).contains(point)) {
+                stderr_log.Clear();
+                ui.log_rows.clear();
+                ui.log_scroll = 0;
+                continue;
+            }
             if (point.y >= LogTop(window)) {
                 ui.editing = false;
                 ui.console_editing = true;
@@ -550,6 +703,16 @@ void HandleEvents(sf::RenderWindow& window, World* world)
                 continue;
             }
             ui.console_editing = false;
+            if (RestartGameBounds(window).contains(point)) {
+                RestartGame(window, world);
+                camera_clock.restart();
+                continue;
+            }
+            if (ZoomBounds(window, true).contains(point) || ZoomBounds(window, false).contains(point)) {
+                ui.editing = false;
+                ZoomCamera(window, ZoomBounds(window, true).contains(point) ? 0.8f : 1.25f);
+                continue;
+            }
             if (point.x < SidebarWidth(window)) {
                 ui.editing = false;
                 const auto ids = EntityIds(world);
@@ -562,10 +725,19 @@ void HandleEvents(sf::RenderWindow& window, World* world)
                 }
                 continue;
             }
-            if (SelectedEntity(world) && point.y < 82.0f) {
+            if (SelectedEntity(world) && point.y < 116.0f) {
+                if (RestartScriptBounds(window).contains(point)) {
+                    ui.editing = false;
+                    LaunchSelectedScript(world, true);
+                    continue;
+                }
                 ui.editing = InputBounds(window).contains(point) &&
                              dynamic_cast<Craft*>(SelectedEntity(world));
                 ui.cursor = ui.script_path.getSize();
+                continue;
+            }
+            if (point.y < 36.0f) {
+                ui.editing = false;
                 continue;
             }
             std::optional<std::size_t> selected;
@@ -597,7 +769,7 @@ void HandleEvents(sf::RenderWindow& window, World* world)
         }
         else if (const auto* key = event->getIf<sf::Event::KeyPressed>()) {
             if (key->code == sf::Keyboard::Key::Escape) {
-                if (!ui.console_editing) ui.selected.reset();
+                if (!ui.console_editing) SelectEntity(window, world, std::nullopt);
                 ui.console_editing = false;
                 ui.editing = false;
             }
@@ -616,10 +788,7 @@ void HandleEvents(sf::RenderWindow& window, World* world)
             }
             else if (ui.editing) {
                 if (key->code == sf::Keyboard::Key::Enter && !ui.script_path.isEmpty()) {
-                    if (auto* craft = dynamic_cast<Craft*>(SelectedEntity(world))) {
-                        const auto utf8 = ui.script_path.toUtf8();
-                        craft->LaunchScript(std::string(utf8.begin(), utf8.end()));
-                    }
+                    LaunchSelectedScript(world, false);
                 }
                 else EditInput(*key, ui.script_path, ui.cursor);
             }
@@ -659,6 +828,12 @@ void HandleEvents(sf::RenderWindow& window, World* world)
 void Render(sf::RenderWindow& window, World* world)
 {
     if (!window.isOpen()) return;
+    auto& ui = Interface();
+    for (auto it = ui.crafts.begin(); it != ui.crafts.end();) {
+        if (world->GetEntities().find(it->first) == world->GetEntities().end())
+            it = ui.crafts.erase(it);
+        else ++it;
+    }
     // Update after World::Update so tracking has no one-frame movement lag.
     FollowSelectedEntity(window, world);
     window.clear(sf::Color::Black);
@@ -723,7 +898,30 @@ void Render(sf::RenderWindow& window, World* world)
             window.draw(asteroid);
         } else {
             auto* craft = static_cast<Craft*>(entity.second.get());
-            if (!craft->GetModulesOfType(MODULE_TYPE::SHIPYARD).empty())
+            const bool is_shipyard = !craft->GetModulesOfType(MODULE_TYPE::SHIPYARD).empty();
+            float throttle = 0.0f;
+            for (auto* module : craft->GetModulesOfType(MODULE_TYPE::PROPULSION))
+                throttle = std::max(throttle, static_cast<PropulsionModule*>(module)->GetThrottle());
+            throttle = std::clamp(throttle, 0.0f, 1.0f);
+            if (throttle > 0.0f) {
+                const float rear = is_shipyard ? -18.0f : -8.0f;
+                const float length = 10.0f + 32.0f * throttle;
+                const float width = 2.0f + 3.0f * throttle;
+                sf::ConvexShape exhaust(3);
+                exhaust.setPoint(0, {rear, -width});
+                exhaust.setPoint(1, {rear - length, 0.0f});
+                exhaust.setPoint(2, {rear, width});
+                exhaust.setPosition({pos.x, -pos.y});
+                exhaust.setRotation(sf::radians(-craft->GetRotation()));
+                exhaust.setFillColor(sf::Color(255, 45, 35, 200));
+                window.draw(exhaust);
+                exhaust.setPoint(0, {rear, -width * 0.5f});
+                exhaust.setPoint(1, {rear - length * 0.55f, 0.0f});
+                exhaust.setPoint(2, {rear, width * 0.5f});
+                exhaust.setFillColor(sf::Color(255, 155, 100, 235));
+                window.draw(exhaust);
+            }
+            if (is_shipyard)
             {
                 shipyard.setPosition({pos.x, -pos.y});
                 shipyard.setRotation(sf::radians(-craft->GetRotation()));
