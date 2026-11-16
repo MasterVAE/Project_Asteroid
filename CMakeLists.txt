@@ -12,6 +12,11 @@ set(CMAKE_EXPORT_COMPILE_COMMANDS ON)
 option(ASTEROID_FETCH_DEPENDENCIES "Download and build pinned SFML and Boost sources" OFF)
 option(ASTEROID_SANITIZERS "Enable AddressSanitizer and UndefinedBehaviorSanitizer" OFF)
 
+if(MSVC AND ASTEROID_FETCH_DEPENDENCIES)
+    # Use the same static CRT for the executable and all bundled dependencies.
+    set(CMAKE_MSVC_RUNTIME_LIBRARY "MultiThreaded$<$<CONFIG:Debug>:Debug>")
+endif()
+
 include(cmake/Dependencies.cmake)
 find_package(Threads REQUIRED)
 
@@ -52,9 +57,8 @@ endif()
 
 # Install Runtime only, so the distribution does not contain dependency SDKs.
 install(TARGETS app RUNTIME DESTINATION . COMPONENT Runtime)
-install(DIRECTORY scripts DESTINATION . COMPONENT Runtime
-    FILES_MATCHING PATTERN "*.py" PATTERN "__pycache__" EXCLUDE)
-install(FILES README.md DESTINATION . COMPONENT Runtime)
+install(FILES scripts/api.py MANUAL.md RECIPES.md
+    DESTINATION . COMPONENT Runtime)
 if(ASTEROID_FETCH_DEPENDENCIES)
     install(FILES "${boost_SOURCE_DIR}/LICENSE_1_0.txt"
         DESTINATION licenses/boost COMPONENT Runtime)
@@ -76,7 +80,7 @@ set(CPACK_PACKAGE_DIRECTORY "${PROJECT_BINARY_DIR}/packages")
 set(CPACK_COMPONENTS_ALL Runtime)
 set(CPACK_ARCHIVE_COMPONENT_INSTALL ON)
 set(CPACK_COMPONENTS_GROUPING ALL_COMPONENTS_IN_ONE)
-if(WIN32)
+if(WIN32 OR APPLE)
     set(CPACK_GENERATOR ZIP)
 else()
     set(CPACK_GENERATOR TGZ)

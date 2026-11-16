@@ -37,6 +37,8 @@
     {"name": "debug", "configurePreset": "debug", "configuration": "Debug"},
     {"name": "sanitize", "configurePreset": "sanitize", "configuration": "Debug"},
     {"name": "standalone", "configurePreset": "standalone", "configuration": "Release"},
-    {"name": "windows-mingw", "configurePreset": "windows-mingw", "configuration": "Release"}
+    {"name": "windows-mingw", "configurePreset": "windows-mingw", "configuration": "Release"},
+    {"name": "standalone-package", "configurePreset": "standalone", "configuration": "Release", "targets": ["package"]},
+    {"name": "windows-package", "configurePreset": "windows-mingw", "configuration": "Release", "targets": ["package"]}
   ]
 }

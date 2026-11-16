@@ -1,3 +1,5 @@
+#include "game.hpp"
+
 #include <boost/asio.hpp>
 #include <boost/process/v2/popen.hpp>
 #include <boost/process/v2/environment.hpp>
@@ -23,7 +25,6 @@
 #include <iostream>
 #include <random>
 
-#include "game.hpp"
 #include "vector.hpp"
 #include "modules.hpp"
 

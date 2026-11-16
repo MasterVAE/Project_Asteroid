@@ -6,19 +6,27 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        os: [ubuntu-24.04, macos-14, windows-2022]
+        os: [ubuntu-24.04, macos-15, windows-2022]
     runs-on: ${{ matrix.os }}
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v6
+      - uses: actions/setup-python@v6
+        with:
+          python-version: '3.12'
       - name: Install Linux system dependencies
         if: runner.os == 'Linux'
         run: |
           sudo apt-get update
           sudo apt-get install -y libfreetype-dev libx11-dev libxrandr-dev libxcursor-dev libxi-dev libudev-dev libgl1-mesa-dev
-      - run: cmake --preset standalone
-      - run: cmake --build --preset standalone --parallel 4
-      - run: cmake --build build/standalone --config Release --target package
-      - uses: actions/upload-artifact@v4
+      - name: Configure
+        run: cmake --preset standalone
+      - name: Build
+        run: cmake --build --preset standalone --parallel 4
+      - name: Package
+        run: cmake --build --preset standalone-package
+      - name: Verify package contents
+        run: python tools/check_package.py build/standalone/packages
+      - uses: actions/upload-artifact@v6
         with:
           name: ProjectAsteroid-${{ matrix.os }}
           path: |
@@ -29,14 +37,19 @@ jobs:
   windows-cross:
     runs-on: ubuntu-24.04
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v6
+      - uses: actions/setup-python@v6
+        with:
+          python-version: '3.12'
       - name: Install MinGW-w64
         run: |
           sudo apt-get update
           sudo apt-get install -y gcc-mingw-w64-x86-64-posix g++-mingw-w64-x86-64-posix
-      - run: make windows
-      - run: cmake --build build/windows-mingw --target package
-      - uses: actions/upload-artifact@v4
+      - name: Build and package
+        run: make package-windows
+      - name: Verify package contents
+        run: python tools/check_package.py build/windows-mingw/packages
+      - uses: actions/upload-artifact@v6
         with:
           name: ProjectAsteroid-windows-mingw
           path: build/windows-mingw/packages/*.zip

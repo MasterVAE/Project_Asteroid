@@ -1,5 +1,10 @@
 #pragma once
 
+#ifdef _WIN32
+// Boost.Process 1.87 must see the CRT declaration of _get_osfhandle first.
+#include <io.h>
+#endif
+
 #include <cstddef>
 #include <memory>
 #include <string>

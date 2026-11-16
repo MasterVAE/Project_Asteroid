@@ -9,7 +9,7 @@ CMAKE_ARGS ?=
 JOBS ?= 4
 PREFIX ?= $(CURDIR)/dist/native
 
-.PHONY: all release configure build run debug run-debug sanitize run-sanitize standalone install package clean clean-all windows windows-local help
+.PHONY: all release configure build run debug run-debug sanitize run-sanitize standalone install package package-standalone package-windows clean clean-all windows windows-local help
 all: build
 release: build
 
@@ -43,6 +43,12 @@ install: build
 package: build
 	$(CMAKE) --build "$(BUILD_DIR)" --config $(CONFIG) --target package
 
+package-standalone:
+	$(MAKE) package BUILD_DIR=build/standalone FETCH_DEPS=ON
+
+package-windows: windows
+	$(CMAKE) --build --preset windows-package
+
 # Build Windows x64 using an installed MinGW-w64 toolchain.
 windows:
 	$(CMAKE) --preset windows-mingw $(CMAKE_ARGS)
@@ -59,6 +65,8 @@ clean-all:
 help:
 	@echo "make [all|run|debug|run-debug|sanitize|run-sanitize|standalone]"
 	@echo "make [install|package|clean] BUILD_DIR=build/release CONFIG=Release"
+	@echo "make package-standalone          Package native build with pinned dependencies"
+	@echo "make package-windows             Package Windows x64 build via MinGW"
 	@echo "make windows                     Windows x64 via installed MinGW"
 	@echo "make windows-local               Alias for make windows"
 	@echo "Options: JOBS=4 FETCH_DEPS=ON CMAKE_ARGS='...' PREFIX=..."

@@ -27,6 +27,9 @@ function(asteroid_fetch_dependencies)
     set(SFML_BUILD_DOC OFF)
     set(SFML_CONFIGURE_EXTRAS OFF)
     set(SFML_INSTALL_XCODE_TEMPLATES OFF)
+    if(MSVC)
+        set(SFML_USE_STATIC_STD_LIBS ON)
+    endif()
     FetchContent_Declare(sfml
         URL https://codeload.github.com/SFML/SFML/tar.gz/refs/tags/3.0.2
         URL_HASH SHA256=0034e05f95509e5d3fb81b1625713e06da7b068f210288ce3fd67106f8f46995
