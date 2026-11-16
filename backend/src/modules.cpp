@@ -371,7 +371,7 @@ void DrillModule::Update(float delta_time)
             continue;
 
         const Vector2 diff = entity->GetPosition() - parent_->GetPosition();
-        if (diff.Length() >= 1)
+        if (diff.LengthSquared() > 10.0f * 10.0f)
             continue;
 
         auto* asteroid = static_cast<Asteroid*>(entity.get());

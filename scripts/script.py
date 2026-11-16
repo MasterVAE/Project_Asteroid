@@ -4,8 +4,11 @@ import time
 
 import api as ship
 
+state = "mine"
+
 @ship.on("console_message")
 def on_message(message):
+    global state
     msg = message.split(" ")
     if msg[0] == "goto":
         FlyTo(float(msg[1]), float(msg[2]))
@@ -14,7 +17,17 @@ def on_message(message):
             print(ship.getPos())
         elif msg[1] == "vel":
             print(ship.getVel())
+        elif msg[1] == "fuel":
+            print(f"fuel {int(tank.getFuel()/tank.getMaxFuel() * 100)}%")
+        elif msg[1] == "inventory":
+            print(storage.getStorage())
 
+    if msg[0] == "refuel":
+        state = "refuel"
+    if msg[0] == "mine":
+        state = "mine"
+    if msg[0] == "exit":
+        state = "exit"
 
 
 
@@ -26,11 +39,23 @@ rcs = ship.RCS("rcs_0")
 drill = ship.Drill("drill_0")
 scan = ship.Scanner("scanner_0")
 power = ship.Power("power_0")
-factory = ship.Factory("factory_0")
-
-mass = ship.getMass()
+tank = ship.FuelTank("fuel_tank_0")
 
 PI = math.pi
+
+propulsion.throttle(0)
+rcs.setThrust((0, 0))
+
+def Forward():
+    angle = ship.getAngle()
+    return (math.cos(angle), math.sin(angle))
+
+def Right():
+    angle = ship.getAngle()
+    return (math.sin(angle), -math.cos(angle))
+
+def dotProduct(x, y):
+    return x[0] * y[0] + x[1] * y[1]
 
 def RotateTowards(x, y):
     need_angle = math.atan2(y, x)
@@ -65,8 +90,6 @@ def RotateTowards(x, y):
         angle = ship.getAngle()
         diff = need_angle - angle
     rcs.gyro(0)
-        
-
 
 def LookAt(x, y):
     pos_x, pos_y = ship.getPos()
@@ -75,43 +98,38 @@ def LookAt(x, y):
     RotateTowards(diff_x, diff_y)
 
 def FlyToSlow(x, y):
-    pos_x, pos_y = ship.getPos()
-    dir_x = x - pos_x
-    dir_y = y - pos_y
-
-    print("accelerating")
-
-    rcs.setThrust((dir_x, dir_y))
-
-    vx, vy = ship.getVel()
-    speed_sq = vx**2 + vy**2
-
+    print("slow approach")
+    propulsion.throttle(0)
+    rcs.gyro(0)
     max_thrust = rcs.getThrust()
-    pos_x, pos_y = ship.getPos()
-    dist = math.sqrt((x - pos_x)**2 + (pos_y - y)**2)
+    try:
+        while ship.is_running():
+            pos_x, pos_y = ship.getPos()
+            vx, vy = ship.getVel()
+            dir_x, dir_y = x - pos_x, y - pos_y
+            dist = math.hypot(dir_x, dir_y)
+            if dist <= 0.25 and math.hypot(vx, vy) <= 0.05:
+                break
 
-    while(speed_sq < 2 * max_thrust * dist / mass):
-        time.sleep(0.01)
+            max_acc = max_thrust / ship.getMass()
+            # Slow down near the target and keep correcting lateral drift.
+            speed = min(3.0, math.sqrt(2 * max_acc * dist), dist)
+            target_vx = dir_x / dist * speed if dist > 0 else 0.0
+            target_vy = dir_y / dist * speed if dist > 0 else 0.0
+            thrust_x = (target_vx - vx) / (0.5 * max_acc)
+            thrust_y = (target_vy - vy) / (0.5 * max_acc)
 
-        vx, vy = ship.getVel()
-        speed_sq = vx**2 + vy**2
-
-        pos_x, pos_y = ship.getPos()
-        dist = math.sqrt((x - pos_x)**2 + (pos_y - y)**2)
-
-    vx, vy = ship.getVel()
-    rcs.setThrust((-vx, - vy))
-
-    print("stoping")
-
-    speed_sq = vx**2 + vy**2
-
-    while(speed_sq > 0.1):
-        time.sleep(0.01)
-        vx, vy = ship.getVel()
-        speed_sq = vx**2 + vy**2
-
-    rcs.setThrust((0, 0))
+            angle = ship.getAngle()
+            cos_angle, sin_angle = math.cos(angle), math.sin(angle)
+            # RCS expects one vector in local coordinates: X forward, Y left.
+            rcs.setThrust((
+                cos_angle * thrust_x + sin_angle * thrust_y,
+                -sin_angle * thrust_x + cos_angle * thrust_y,
+            ))
+            time.sleep(0.02)
+    finally:
+        if ship.is_running():
+            rcs.setThrust((0, 0))
 
 def Stop():
     x, y = ship.getVel();
@@ -121,10 +139,19 @@ def Stop():
     vel = ship.getVel()
     while vel[0]**2 + vel[1]**2 > 0.1:
         time.sleep(0.01)
+        vel = ship.getVel()
     propulsion.throttle(0)
 
 
 def FlyTo(x, y):
+
+    pos = ship.getPos()
+    if(math.sqrt((x-pos[0])**2 + (y - pos[1])**2) < 50):
+        FlyToSlow(x, y)
+        return
+
+    print("flying")
+
     Stop()
     LookAt(x, y)
     acc = propulsion.getMaxThrottle() / ship.getMass()
@@ -153,14 +180,57 @@ def FlyTo(x, y):
     propulsion.throttle(1)
 
     vel = ship.getVel()
-    speed = math.sqrt(vel[0]**2 + vel[1]**2)
 
-    while speed > 0.1:
+    while dotProduct(vel, Forward()) < 0:
         time.sleep(0.01)
         vel = ship.getVel()
-        speed = math.sqrt(vel[0]**2 + vel[1]**2)
 
     propulsion.throttle(0)
 
+def Mine():
+    target = (0, 0)
+    for obj in scan.scan():
+        if obj['type'] == 'asteroid':
+            target = (obj['x'], obj['y'])
+            break
+    print("target: ", target)
+    FlyTo(target[0], target[1])
+
+    print("drilling")
+    drill.enable()
+    time.sleep(10)
+    drill.disable()
+
+def Refuel():
+    global state
+    print(f"go for refueling, fuel: {int(tank.getFuel()/tank.getMaxFuel() * 100)}%")
+    FlyTo(0, 0)
+
+    strg = storage.getStorage()
+
+    for key in strg:
+        for i in range(strg[key]):
+            storage.transfer(0, key)
+
+    print(f"fuel: {int(tank.getFuel()/tank.getMaxFuel() * 100)}%")
+
+    storage.readyToRecieve()
+    scan.signal(0, "need fuel")
+    time.sleep(10)
+    storage.notReadyToRecieve()
+
+    print(f"refueled {int(tank.getFuel()/tank.getMaxFuel() * 100)}%")
+    state = "mine"
+
+
 while ship._running:
+    if tank.getFuel() < 0.5 * tank.getMaxFuel():
+        state = "refuel"
+
+    if state == "mine":
+        Mine()
+    elif state == "refuel":
+        Refuel()
+    elif state == "exit":
+        break
     time.sleep(0.01)
