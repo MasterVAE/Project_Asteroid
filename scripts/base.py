@@ -15,7 +15,7 @@ def on_signal(signal):
                 if inventory.keys().__contains__("rocket_fuel"):
                     count = inventory["rocket_fuel"]
                 for i in range(count):
-                    storage.transfer(1, "rocket_fuel")
+                    storage.transfer("rocket_fuel")
 
 @ship.on("console_message")
 def on_message(message):
@@ -32,6 +32,7 @@ def Contains(resource):
 
 
 ship.start()
+ship.readyToConnect()
 
 factory = ship.Factory("factory_0")
 
@@ -43,6 +44,8 @@ for i in range(len(recipes)):
     print(i, recipes[i])
 
 while ship._running:
+    if ship.getConnection()["connected"] is None:
+        ship.readyToConnect()
     if Contains("ice"):
         factory.produce(0)
     elif Contains("water"):

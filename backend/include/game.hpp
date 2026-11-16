@@ -41,6 +41,7 @@ private:
     std::size_t id_ = 0;
     Vector2 position_;
     Vector2 velocity_;
+    const float mass_ = 100.0f;
     float rotation_ = 0.0f;
     float angular_velocity_ = 0.0f;
     ENTITY_TYPE type_;
@@ -81,7 +82,9 @@ public:
     ENTITY_TYPE GetType() { return type_; }
 
     virtual void Update(float) {};
-    void Advance(float delta_time);
+    virtual void Advance(float delta_time);
+
+    virtual float GetMass();
 
     Vector2 Forward();
     Vector2 FromLocalTowWorld(Vector2 local);
@@ -92,10 +95,19 @@ public:
 
 
 class Craft : public Entity {
+    friend class PropulsionModule;
+    friend class RCSModule;
+    friend class StorageModule;
     friend class ShipyardModule;
+    friend class GrabModule;
+    friend class Asteroid;
     friend class World;
 
 public:
+    // Connection fields are protected by connection_mutex_. One partner per craft.
+    Craft* connected = nullptr;
+    bool readyToConnect = false;
+
     Craft();
     Craft(Vector2 pos, std::string name = "Craft");
     ~Craft() override;
@@ -107,23 +119,38 @@ public:
     void LaunchScript(std::string filename);
     bool IsScriptRunning();
     void SendEvent(const boost::json::object& event_data);
-    float GetMass() { return mass_; }
-    void RecalculateMass();
+    float GetMass() override;
+    bool Connect(Craft* target);
+    void Disconnect();
+    void SetReadyToConnect(bool ready);
+    boost::json::object GetConnection();
 
+    void Advance(float delta_time) override;
     void Update(float delta_time) override;
 
     std::mutex send_mutex_;
     std::mutex state_mutex_;
 
 private:
+    static std::mutex connection_mutex_;
+    struct AssemblyLock
+    {
+        std::unique_lock<std::mutex> connection;
+        std::unique_lock<std::mutex> own;
+        std::unique_lock<std::mutex> partner;
+    };
+    AssemblyLock LockAssemblyState();
     std::unordered_map<MODULE_TYPE, std::size_t> module_indices_;
 
-    float mass_ = 0;
+    float defaul_mass_ = 10;
     std::string script_data; // Protected by state_mutex_; persisted with the world.
 
     std::vector<std::unique_ptr<Module>> modules_;
 
-    void RecalculateMassLocked(); // Requires state_mutex_ to be held.
+    float GetOwnMassLocked(); // Requires state_mutex_ to be held.
+    float GetMassLocked(); // Requires LockAssemblyState().
+    void ApplyImpulseLocked(Vector2 impulse); // Requires LockAssemblyState().
+    void SyncGrabbedAsteroidsLocked(); // Requires the connection mutex and state_mutex_.
     Module& AddModuleLocked(MODULE_TYPE type); // Requires state_mutex_ to be held.
     void Send(const boost::json::object& message);
     void StopScript();
@@ -147,21 +174,36 @@ private:
 
 class Asteroid : public Entity
 {
+    friend class GrabModule;
+    friend class World;
+    GrabModule* grabbed_by_ = nullptr; // Protected by Craft::connection_mutex_.
     std::unordered_map<RESOURCE_TYPE, std::size_t> resources_;
 public:
     Asteroid();
     Asteroid(Vector2 pos, std::string name = "Asteroid");
-    ~Asteroid() override = default;
+    ~Asteroid() override;
 
     std::unordered_map<RESOURCE_TYPE, std::size_t>& GetResources() { return resources_; }
     RESOURCE_TYPE Mine();
 
+    void Advance(float delta_time) override;
     void Update(float delta_time) override;
 };
 
 
 class World
 {
+    struct CraftCommand
+    {
+        std::size_t source;
+        std::optional<std::size_t> target; // With an empty launch path, no target means disconnect.
+        std::string launch; // A non-empty path means launch on the connected craft.
+        std::string grab_module; // A module name means grab target, or release if target is empty.
+    };
+    std::mutex craft_commands_mutex_;
+    std::vector<CraftCommand> craft_commands_;
+    void ProcessCraftCommands();
+    void StopScripts();
     std::size_t next_id_ = 0;
     std::unordered_map<std::size_t, std::unique_ptr<Entity>> entities_;
     std::unordered_set<std::size_t> pending_destroy_;
@@ -170,6 +212,11 @@ class World
 
 public:
     World();
+    ~World();
+
+    void QueueConnection(std::size_t source, std::optional<std::size_t> target);
+    void QueueLaunch(std::size_t source, std::string filename);
+    void QueueGrab(std::size_t source, std::string module, std::optional<std::size_t> target);
 
     void SpawnEntity(std::unique_ptr<Entity> entity);
     void DestroyEntity(Entity* entity);

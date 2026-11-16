@@ -9,6 +9,22 @@
 #include <iostream>
 #include <utility>
 
+float Module::GetMass()
+{
+    std::lock_guard lock(parent_->state_mutex_);
+    return GetMassLocked();
+}
+
+float Module::GetMassLocked()
+{
+    for (const auto& data : MODULES_DATA)
+    {
+        if (data.type == type_)
+            return data.mass;
+    }
+    throw std::invalid_argument("Unknown module type");
+}
+
 // prop module
 
 
@@ -18,7 +34,7 @@ void PropulsionModule::Update(float delta_time)
         return;
 
     const auto fuel_tanks = parent_->GetModulesOfType(MODULE_TYPE::FUEL_TANK);
-    std::lock_guard lock(parent_->state_mutex_);
+    auto lock = parent_->LockAssemblyState();
     if (throttle_ == 0)
         return;
 
@@ -33,7 +49,7 @@ void PropulsionModule::Update(float delta_time)
         return;
     }
 
-    parent_->SetVelocity(parent_->GetVelocity() + max_thrust_ * throttle_ * delta_time * parent_->Forward() / parent_->GetMass());
+    parent_->ApplyImpulseLocked(max_thrust_ * throttle_ * delta_time * parent_->Forward());
 }
 
 void PropulsionModule::SetThrottle(float throttle)
@@ -84,16 +100,18 @@ boost::json::object PropulsionModule::Handle(boost::json::object request)
 
 // storage module
 
-
-void StorageModule::ReadyForRecieve()
+float StorageModule::GetMassLocked()
 {
-    std::lock_guard lock(parent_->state_mutex_);
-    ready_to_recieve_ = true;
-}
-void StorageModule::NotReadyForRecieve()
-{
-    std::lock_guard lock(parent_->state_mutex_);
-    ready_to_recieve_ = false;
+    float mass = Module::GetMassLocked();
+    for (const auto& [resource, count] : inventory_)
+    {
+        const auto* data = std::find_if(RESOURCES, RESOURCES + RESOURCES_COUNT,
+            [type = resource](const RESOURCE_DATA& entry) { return entry.type == type; });
+        if (data == RESOURCES + RESOURCES_COUNT)
+            throw std::runtime_error("Unknown resource type");
+        mass += data->mass * count;
+    }
+    return mass;
 }
 
 
@@ -182,54 +200,29 @@ boost::json::object StorageModule::Handle(boost::json::object request)
             {"result", result}
         };
     }
-    else if(method == "ready_to_recieve")
-    {
-        ReadyForRecieve();
-    }
-    else if(method == "not_ready_to_recieve")
-    {
-        NotReadyForRecieve();
-    }
     else if(method == "transfer")
     {
-        const auto& value = request.at("value").as_array();
-        if (value.size() != 2)
-            throw std::invalid_argument("Transfer must contain [id, resource]");
-
-        const auto id = boost::json::value_to<std::size_t>(value.at(0));
-        const auto resource_name = boost::json::value_to<std::string>(value.at(1));
+        const auto resource_name = boost::json::value_to<std::string>(request.at("value"));
         const auto* data = std::find_if(RESOURCES, RESOURCES + RESOURCES_COUNT,
             [&resource_name](const RESOURCE_DATA& entry) { return entry.name == resource_name; });
         if (data == RESOURCES + RESOURCES_COUNT)
             throw std::invalid_argument("Unknown resource type");
 
-        const auto& entities = parent_->world->GetEntities();
-        const auto entity = entities.find(id);
-        if (entity == entities.end())
-            return {};
-
-        if(entity->second->GetType() != ENTITY_TYPE::CRAFT) return {};
-        auto* target = static_cast<Craft*>(entity->second.get());
-        if (target == nullptr || target == parent_)
-            return {};
-
-        const auto modules = target->GetModules();
-        std::scoped_lock lock(parent_->state_mutex_, target->state_mutex_);
-        if (!(parent_->GetPosition().DistanceSquared(target->GetPosition()) <= 100.0f))
+        auto lock = parent_->LockAssemblyState();
+        auto* target = parent_->connected;
+        if (target == nullptr)
             return {};
 
         const auto source = inventory_.find(data->type);
         if (source == inventory_.end() || source->second == 0)
             return {};
 
-        for (auto* module : modules)
+        for (const auto& module : target->modules_)
         {
             if (module->GetType() != MODULE_TYPE::STORAGE)
                 continue;
 
-            auto* storage = static_cast<StorageModule*>(module);
-            if (!storage->ready_to_recieve_)
-                continue;
+            auto* storage = static_cast<StorageModule*>(module.get());
 
             std::size_t free_space = storage->capacity_;
             for (const auto& [resource, count] : storage->inventory_)
@@ -264,9 +257,27 @@ boost::json::object StorageModule::Handle(boost::json::object request)
 
 void RCSModule::Update(float delta_time)
 {
-    std::lock_guard lock(parent_->state_mutex_);
-    parent_->SetAngularVelocity(gyro_ * max_gyro_ / parent_->GetMass());
-    parent_->SetVelocity(parent_->GetVelocity() + max_thrust_ * parent_->FromLocalTowWorld(thrust_) * delta_time / parent_->GetMass());
+    if (!std::isfinite(delta_time) || delta_time <= 0)
+        return;
+    auto lock = parent_->LockAssemblyState();
+    const float mass = parent_->GetMassLocked();
+    // Sum gyro controls so an idle RCS on the partner cannot cancel active controls.
+    const auto gyro_force = [](Craft* craft) {
+        float force = 0;
+        for (const auto& module : craft->modules_)
+            if (module->GetType() == MODULE_TYPE::RCS)
+            {
+                const auto* rcs = static_cast<RCSModule*>(module.get());
+                force += rcs->gyro_ * rcs->max_gyro_;
+            }
+        return force;
+    };
+    const float angular_velocity = (gyro_force(parent_) +
+        (parent_->connected ? gyro_force(parent_->connected) : 0)) / mass;
+    parent_->SetAngularVelocity(angular_velocity);
+    if (parent_->connected)
+        parent_->connected->SetAngularVelocity(angular_velocity);
+    parent_->ApplyImpulseLocked(max_thrust_ * parent_->FromLocalTowWorld(thrust_) * delta_time);
 }
 
 void RCSModule::SetGyro(float gyro)
@@ -375,7 +386,8 @@ void DrillModule::Update(float delta_time)
             continue;
 
         auto* asteroid = static_cast<Asteroid*>(entity.get());
-
+        if (asteroid->GetResources().empty())
+            continue;
 
         const RESOURCE_TYPE resource = asteroid->Mine();
         for (auto* module : modules)
@@ -765,11 +777,15 @@ void ShipyardModule::Update(float delta_time)
     {
         const auto storages = parent_->GetModulesOfType(MODULE_TYPE::STORAGE);
         const auto powers = parent_->GetModulesOfType(MODULE_TYPE::POWER);
+        std::unique_lock connection_lock(Craft::connection_mutex_);
         std::unique_lock lock(parent_->state_mutex_);
         if (queue_.empty())
             return;
 
         const auto order = queue_.front();
+        // Reserve the free berth for the entire construction step, including docking.
+        if (order.type == MODULE_TYPE::NONE && parent_->connected != nullptr)
+            return;
         const CONSTRUCTION_RECIPE* recipe = &CRAFT_RECIPE;
         Craft* target = nullptr;
         std::unique_lock<std::mutex> target_lock;
@@ -844,16 +860,21 @@ void ShipyardModule::Update(float delta_time)
         }
         else
         {
-            auto craft = std::make_unique<Craft>(
-                parent_->GetPosition() + parent_->Forward() * (building_radius_ * 0.5f));
+            auto craft = std::make_unique<Craft>(parent_->GetPosition());
             craft->SetVelocity(parent_->GetVelocity());
             craft->SetRotation(parent_->GetRotation());
+            craft->SetAngularVelocity(parent_->GetAngularVelocity());
+            auto* constructed = craft.get();
             parent_->world->SpawnEntity(std::move(craft));
+            // Construction docks directly, without requiring readyToConnect.
+            parent_->connected = constructed;
+            constructed->connected = parent_;
+            parent_->readyToConnect = false;
+            constructed->readyToConnect = false;
         }
 
         for (std::size_t i = 0; i < storages.size(); ++i)
             static_cast<StorageModule*>(storages[i])->GetInventory().swap(inventories[i]);
-        parent_->RecalculateMassLocked();
         queue_.pop_front();
         time_ = 0;
     }
@@ -940,7 +961,107 @@ boost::json::object ShipyardModule::Handle(boost::json::object request)
 
 
 
+// GRAB MODULE
+
+GrabModule::~GrabModule()
+{
+    Release();
+}
+
+float GrabModule::GetMass()
+{
+    auto lock = parent_->LockAssemblyState();
+    return GetMassLocked();
+}
+
+float GrabModule::GetMassLocked()
+{
+    return Module::GetMassLocked() + (grabbed_ ? grabbed_->GetMass() : 0);
+}
+
+bool GrabModule::Grab(Asteroid* asteroid)
+{
+    if (asteroid == nullptr)
+        return false;
+    auto lock = parent_->LockAssemblyState();
+    if (grabbed_ || asteroid->grabbed_by_ || asteroid->world != parent_->world ||
+        asteroid->GetResources().empty() ||
+        !(parent_->GetPosition().DistanceSquared(asteroid->GetPosition()) <= radius_ * radius_))
+        return false;
+
+    local_offset_ = (asteroid->GetPosition() - parent_->GetPosition()).Rotated(-parent_->GetRotation());
+    rotation_offset_ = asteroid->GetRotation() - parent_->GetRotation();
+    grabbed_ = asteroid;
+    asteroid->grabbed_by_ = this;
+    SyncLocked();
+    return true;
+}
+
+void GrabModule::Release()
+{
+    auto lock = parent_->LockAssemblyState();
+    if (grabbed_)
+    {
+        SyncLocked();
+        grabbed_->grabbed_by_ = nullptr;
+        grabbed_ = nullptr;
+    }
+}
+
+void GrabModule::SyncLocked()
+{
+    if (grabbed_ == nullptr)
+        return;
+    const Vector2 offset = parent_->FromLocalTowWorld(local_offset_);
+    const float angular_velocity = parent_->GetAngularVelocity();
+    grabbed_->SetPosition(parent_->GetPosition() + offset);
+    grabbed_->SetRotation(parent_->GetRotation() + rotation_offset_);
+    // Include the tangential velocity so release preserves the asteroid's current motion.
+    grabbed_->SetVelocity(parent_->GetVelocity() + Vector2(-offset.y, offset.x) * angular_velocity);
+    grabbed_->SetAngularVelocity(angular_velocity);
+}
+
+void GrabModule::Update(float /*delta_time*/)
+{
+    auto lock = parent_->LockAssemblyState();
+    SyncLocked();
+}
+
+boost::json::object GrabModule::Handle(boost::json::object request)
+{
+    const auto method = boost::json::value_to<std::string>(request.at("method"));
+    if (method == "get_grabbed")
+    {
+        auto lock = parent_->LockAssemblyState();
+        boost::json::object result{{"asteroid_id", nullptr}};
+        if (grabbed_)
+            result["asteroid_id"] = grabbed_->GetId();
+        return {{"type", "response"}, {"id", request.at("id")}, {"result", std::move(result)}};
+    }
+    if (method == "get_radius")
+        return {{"type", "response"}, {"id", request.at("id")},
+            {"result", boost::json::object{{"radius", radius_}}}};
+    if (method == "grab")
+    {
+        const auto& value = request.at("value");
+        if ((!value.is_int64() && !value.is_uint64()) || (value.is_int64() && value.as_int64() < 0))
+            throw std::invalid_argument("Asteroid ID must be a non-negative integer");
+        if (parent_->world)
+            parent_->world->QueueGrab(parent_->GetId(), GetName(), boost::json::value_to<std::size_t>(value));
+    }
+    else if (method == "release" && parent_->world)
+        parent_->world->QueueGrab(parent_->GetId(), GetName(), std::nullopt);
+    return {};
+}
+
 // FUEL MODULE
+
+float FuelTankModule::GetMassLocked()
+{
+    const auto* fuel_data = std::find_if(RESOURCES, RESOURCES + RESOURCES_COUNT,
+        [](const RESOURCE_DATA& entry) { return entry.type == RESOURCE_TYPE::ROCKET_FUEL; });
+    return Module::GetMassLocked() + fuel_ / fuel_per_object_ * fuel_data->mass;
+}
 
 
 bool FuelTankModule::GetFuel(float fuel)

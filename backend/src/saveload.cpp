@@ -216,6 +216,7 @@ void World::Save(std::string filename)
 
         // Freeze all craft inventories together so a concurrent transfer cannot
         // appear in both crafts (or neither craft) in the same snapshot.
+        std::unique_lock connection_lock(Craft::connection_mutex_);
         std::vector<std::unique_lock<std::mutex>> state_locks;
         state_locks.reserve(entities.size());
         for (auto* entity : entities)
@@ -247,6 +248,8 @@ void World::Save(std::string filename)
                 saved["script"] = craft->script_path_;
             }
             saved["script_data"] = craft->script_data;
+            saved["connected"] = craft->connected ? json::value(craft->connected->GetId()) : json::value(nullptr);
+            saved["readyToConnect"] = craft->readyToConnect;
             json::object indices;
             for (const auto& entry : craft->module_indices_) indices[ModuleName(entry.first)] = entry.second;
             saved["module_indices"] = std::move(indices);
@@ -266,7 +269,6 @@ void World::Save(std::string filename)
                     CheckInventory(current->inventory_, current->capacity_);
                     data["capacity"] = current->capacity_;
                     data["inventory"] = SaveResources(current->inventory_);
-                    data["ready_to_recieve"] = current->ready_to_recieve_;
                     break;
                 }
                 case MODULE_TYPE::RCS: {
@@ -328,6 +330,13 @@ void World::Save(std::string filename)
                     data["fuel_per_object"] = Number(current->fuel_per_object_);
                     break;
                 }
+                case MODULE_TYPE::GRAB: {
+                    const auto* current = static_cast<GrabModule*>(module.get());
+                    data["asteroid"] = current->grabbed_ ? json::value(current->grabbed_->GetId()) : json::value(nullptr);
+                    data["local_offset"] = SaveVector(current->local_offset_);
+                    data["rotation_offset"] = Number(current->rotation_offset_);
+                    break;
+                }
                 default:
                     throw std::runtime_error("Unsupported module in world");
                 }
@@ -337,6 +346,7 @@ void World::Save(std::string filename)
             saved_entities.push_back(std::move(saved));
         }
         state_locks.clear();
+        connection_lock.unlock();
         WriteSave(path, {{"format", "project_asteroid"}, {"version", save_version},
                          {"next_id", next_id_}, {"entities", std::move(saved_entities)}});
     } catch (const std::exception& error) {
@@ -363,6 +373,8 @@ void World::Load(std::string filename)
 
         // Build and validate everything before stopping scripts or replacing the current world.
         std::unordered_map<std::size_t, std::unique_ptr<Entity>> restored;
+        std::unordered_map<std::size_t, std::optional<std::size_t>> connections;
+        std::vector<std::pair<GrabModule*, std::size_t>> attachments;
         std::vector<std::pair<Craft*, std::string>> scripts;
         for (const auto& entry : root.at("entities").as_array()) {
             const auto& saved = entry.as_object();
@@ -383,6 +395,12 @@ void World::Load(std::string filename)
             }
             else if (type == "craft") {
                 auto craft = std::make_unique<Craft>(position, name);
+                std::optional<std::size_t> partner;
+                if (const auto* value = saved.if_contains("connected"); value && !value->is_null())
+                    partner = Count(*value);
+                connections.emplace(id, partner);
+                if (const auto* value = saved.if_contains("readyToConnect"))
+                    craft->readyToConnect = value->as_bool();
                 if (const auto* data = saved.if_contains("script_data"))
                     craft->script_data = json::value_to<std::string>(*data);
                 for (const auto& module_entry : saved.at("modules").as_array()) {
@@ -404,7 +422,6 @@ void World::Load(std::string filename)
                         current.capacity_ = Count(data.at("capacity"));
                         current.inventory_ = LoadResources(data.at("inventory"));
                         CheckInventory(current.inventory_, current.capacity_);
-                        current.ready_to_recieve_ = data.at("ready_to_recieve").as_bool();
                         break;
                     }
                     case MODULE_TYPE::RCS: {
@@ -475,6 +492,16 @@ void World::Load(std::string filename)
                         current.fuel_per_object_ = Positive(data, "fuel_per_object");
                         break;
                     }
+                    case MODULE_TYPE::GRAB: {
+                        auto& current = static_cast<GrabModule&>(module);
+                        current.local_offset_ = LoadVector(data.at("local_offset"));
+                        current.rotation_offset_ = Number(data.at("rotation_offset"));
+                        if (current.local_offset_.LengthSquared() > current.radius_ * current.radius_ + 0.001f)
+                            throw std::runtime_error("Saved asteroid is outside the grab radius");
+                        if (!data.at("asteroid").is_null())
+                            attachments.emplace_back(&current, Count(data.at("asteroid")));
+                        break;
+                    }
                     default:
                         throw std::runtime_error("Unsupported saved module");
                     }
@@ -492,7 +519,6 @@ void World::Load(std::string filename)
                 for (const auto& item : craft->module_indices_)
                     if (!indices.count(item.first)) throw std::runtime_error("Missing saved module index");
                 craft->module_indices_ = std::move(indices);
-                craft->RecalculateMass();
                 const auto script = json::value_to<std::string>(saved.at("script"));
                 if (script.find('\0') != std::string::npos)
                     throw std::runtime_error("Saved script path contains NUL");
@@ -510,11 +536,51 @@ void World::Load(std::string filename)
             restored.emplace(id, std::move(entity));
         }
 
+        // Validate every reference before installing pointers or replacing the world.
+        for (const auto& [id, partner] : connections)
+        {
+            if (!partner)
+                continue;
+            const auto other = connections.find(*partner);
+            if (*partner == id || other == connections.end() || other->second != id)
+                throw std::runtime_error("Saved craft connection must be a mutual pair");
+        }
+        std::unordered_set<std::size_t> grabbed_asteroids;
+        for (const auto& [module, asteroid_id] : attachments)
+        {
+            const auto asteroid = restored.find(asteroid_id);
+            if (asteroid == restored.end() || asteroid->second->GetType() != ENTITY_TYPE::ASTEROID ||
+                !grabbed_asteroids.insert(asteroid_id).second)
+                throw std::runtime_error("Saved grab must reference a unique asteroid");
+        }
+        for (const auto& [id, partner] : connections)
+            if (partner)
+                static_cast<Craft*>(restored.at(id).get())->connected =
+                    static_cast<Craft*>(restored.at(*partner).get());
+        for (const auto& [id, partner] : connections)
+            if (partner && id < *partner)
+            {
+                auto* craft = static_cast<Craft*>(restored.at(id).get());
+                craft->connected->SetPosition(craft->GetPosition());
+                craft->connected->SetRotation(craft->GetRotation());
+                craft->connected->SetVelocity(craft->GetVelocity());
+                craft->connected->SetAngularVelocity(craft->GetAngularVelocity());
+            }
+        // The restored objects are still private; install attachments before starting any scripts.
+        for (const auto& [module, asteroid_id] : attachments)
+        {
+            auto* asteroid = static_cast<Asteroid*>(restored.at(asteroid_id).get());
+            module->grabbed_ = asteroid;
+            asteroid->grabbed_by_ = module;
+            module->SyncLocked();
+        }
+
         // Every old script must finish while its old world and its targets still exist.
-        for (const auto& entry : entities_)
-            if (entry.second->GetType() == ENTITY_TYPE::CRAFT) static_cast<Craft*>(entry.second.get())->StopScript();
-        for (const auto& entity : pending_spawn_)
-            if (entity->GetType() == ENTITY_TYPE::CRAFT) static_cast<Craft*>(entity.get())->StopScript();
+        StopScripts();
+        {
+            std::lock_guard lock(craft_commands_mutex_);
+            craft_commands_.clear();
+        }
         entities_.swap(restored);
         pending_spawn_.clear();
         pending_destroy_.clear();

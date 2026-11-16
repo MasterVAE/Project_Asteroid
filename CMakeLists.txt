@@ -55,9 +55,28 @@ if(NOT CMAKE_CROSSCOMPILING)
         WORKING_DIRECTORY "${PROJECT_SOURCE_DIR}" USES_TERMINAL VERBATIM)
 endif()
 
+option(ASTEROID_BUILD_TESTS "Build backend docking regression tests" OFF)
+if(ASTEROID_BUILD_TESTS)
+    enable_testing()
+    add_executable(docking_tests tests/docking.cpp backend/src/game.cpp
+        backend/src/modules.cpp backend/src/saveload.cpp)
+    target_include_directories(docking_tests PRIVATE backend/include)
+    target_link_libraries(docking_tests PRIVATE
+        Boost::json Boost::filesystem Boost::process Threads::Threads)
+    target_compile_options(docking_tests PRIVATE $<TARGET_PROPERTY:app,COMPILE_OPTIONS>)
+    target_compile_definitions(docking_tests PRIVATE $<TARGET_PROPERTY:app,COMPILE_DEFINITIONS>)
+    target_link_options(docking_tests PRIVATE $<TARGET_PROPERTY:app,LINK_OPTIONS>)
+    if(WIN32)
+        target_link_libraries(docking_tests PRIVATE ws2_32 mswsock)
+    endif()
+    add_test(NAME docking COMMAND docking_tests "${PROJECT_SOURCE_DIR}")
+    set_tests_properties(docking PROPERTIES TIMEOUT 30)
+endif()
+
 # Install Runtime only, so the distribution does not contain dependency SDKs.
 install(TARGETS app RUNTIME DESTINATION . COMPONENT Runtime)
-install(FILES scripts/api.py MANUAL.md RECIPES.md
+install(FILES scripts/api.py scripts/demo_common.py
+    scripts/throw_asteroid.py scripts/mine_and_deliver.py MANUAL.md RECIPES.md
     DESTINATION . COMPONENT Runtime)
 if(ASTEROID_FETCH_DEPENDENCIES)
     install(FILES "${boost_SOURCE_DIR}/LICENSE_1_0.txt"

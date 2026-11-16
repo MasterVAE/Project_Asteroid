@@ -205,19 +205,27 @@ def Refuel():
     global state
     print(f"go for refueling, fuel: {int(tank.getFuel()/tank.getMaxFuel() * 100)}%")
     FlyTo(0, 0)
+    FlyToSlow(0, 0)
+
+    while ship.is_running() and ship.getConnection()["connected"] != 0:
+        ship.connect(0)
+        time.sleep(0.1)
+    if not ship.is_running():
+        return
 
     strg = storage.getStorage()
 
     for key in strg:
         for i in range(strg[key]):
-            storage.transfer(0, key)
+            storage.transfer(key)
 
     print(f"fuel: {int(tank.getFuel()/tank.getMaxFuel() * 100)}%")
 
-    storage.readyToRecieve()
     scan.signal(0, "need fuel")
     time.sleep(10)
-    storage.notReadyToRecieve()
+    ship.disconnect()
+    while ship.is_running() and ship.getConnection()["connected"] is not None:
+        time.sleep(0.02)
 
     print(f"refueled {int(tank.getFuel()/tank.getMaxFuel() * 100)}%")
     state = "mine"

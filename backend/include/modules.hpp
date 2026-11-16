@@ -11,6 +11,7 @@
 
 class Entity;
 class Craft;
+class Asteroid;
 
 enum MODULE_TYPE
 {
@@ -23,16 +24,19 @@ enum MODULE_TYPE
     POWER,
     FACTORY,
     SHIPYARD,
-    FUEL_TANK
+    FUEL_TANK,
+    GRAB
 };
 
 class Module
 {
+    friend class Craft;
     std::string name_;
     MODULE_TYPE type_;
 
 protected:
     Craft* parent_;
+    virtual float GetMassLocked(); // Requires the parent craft state mutex.
 
 public:
     Module(Craft* parent, MODULE_TYPE type, std::string name)
@@ -45,6 +49,7 @@ public:
 
     virtual boost::json::object Handle(boost::json::object) { return {}; };
     virtual void Update(float) {};
+    virtual float GetMass();
 
 };
 
@@ -72,7 +77,7 @@ class StorageModule : public Module
     friend class World;
     std::size_t capacity_ = 20;
     std::unordered_map<RESOURCE_TYPE, std::size_t> inventory_;
-    bool ready_to_recieve_ = false;
+    float GetMassLocked() override;
 public:
     StorageModule(Craft* parent, std::size_t capacity) 
                             : Module(parent, MODULE_TYPE::STORAGE, ""), capacity_(capacity) {}
@@ -82,9 +87,6 @@ public:
     std::size_t ResourceCount(RESOURCE_TYPE);
     void AddToInventory(std::unordered_map<RESOURCE_TYPE, std::size_t> add);
     void TakeFromInventory(std::unordered_map<RESOURCE_TYPE, std::size_t> take);
-
-    void ReadyForRecieve();
-    void NotReadyForRecieve();
 
     void Update(float delta_time) override;
 
@@ -232,6 +234,7 @@ class FuelTankModule : public Module
     float fuel_ = 0;
     float fuel_per_object_ = 20; 
     bool GetFuelLocked(float fuel); // Requires the craft state mutex.
+    float GetMassLocked() override;
 public:
     FuelTankModule(Craft* parent) : Module(parent, MODULE_TYPE::FUEL_TANK, "") {}
 
@@ -239,6 +242,31 @@ public:
 
     bool GetFuel(float fuel);
 
+    void Update(float delta_time) override;
+    boost::json::object Handle(boost::json::object request) override;
+};
+
+class GrabModule : public Module
+{
+    friend class Craft;
+    friend class Asteroid;
+    friend class World;
+
+    static constexpr float radius_ = 10.0f;
+    // Attachment state is protected by Craft::connection_mutex_.
+    Asteroid* grabbed_ = nullptr;
+    Vector2 local_offset_;
+    float rotation_offset_ = 0;
+    float GetMassLocked() override;
+    void SyncLocked(); // Requires the connection mutex and parent craft state mutex.
+
+public:
+    GrabModule(Craft* parent) : Module(parent, MODULE_TYPE::GRAB, "") {}
+    ~GrabModule() override;
+
+    bool Grab(Asteroid* asteroid);
+    void Release();
+    float GetMass() override;
     void Update(float delta_time) override;
     boost::json::object Handle(boost::json::object request) override;
 };
@@ -260,7 +288,8 @@ static const MODULE_DATA MODULES_DATA[] =
     {POWER, "power", 20},
     {FACTORY, "factory", 20},
     {SHIPYARD, "shipyard", 50},
-    {FUEL_TANK, "fuel_tank", 5}
+    {FUEL_TANK, "fuel_tank", 5},
+    {GRAB,      "grab", 5}
 };
 
 static const std::size_t MODULES_COUNT = sizeof(MODULES_DATA)/sizeof(MODULES_DATA[0]);
@@ -291,7 +320,8 @@ inline const CONSTRUCTION_RECIPE MODULE_RECIPES[] =
     {{STEEL},                   MODULE_TYPE::POWER},
     {{STEEL},         MODULE_TYPE::FACTORY},
     {{STEEL},   MODULE_TYPE::SHIPYARD},
-    {{STEEL},                                  MODULE_TYPE::FUEL_TANK}
+    {{STEEL},                                  MODULE_TYPE::FUEL_TANK},
+    {{STEEL},                                  MODULE_TYPE::GRAB}
 };
 
 static const std::size_t MODULE_RECIPES_COUNT = sizeof(MODULE_RECIPES)/sizeof(MODULE_RECIPES[0]);

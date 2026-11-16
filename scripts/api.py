@@ -224,8 +224,34 @@ def getModules(timeout=2.0) -> list:
     return _request("get_modules", timeout=timeout)["modules"]
 
 def getMass(timeout=2.0) -> float:
-    """Возвращает массу корабля с грузом."""
+    """Масса корабля с грузом, топливом и захваченными астероидами; при стыковке — масса пары."""
     return float(_request("get_mass", timeout=timeout)["mass"])
+
+def readyToConnect(ready=True):
+    """Разрешает или запрещает другому кораблю пристыковаться к своему."""
+    if not isinstance(ready, bool):
+        raise ValueError("Readiness must be a bool")
+    command("set_ready_to_connect", value=ready)
+
+def connect(craft_id):
+    """Стыковка с готовым кораблём на расстоянии до 1; применяется на следующем тике."""
+    if isinstance(craft_id, bool) or not isinstance(craft_id, int) or craft_id < 0:
+        raise ValueError("Craft ID must be a non-negative integer")
+    command("connect", value=craft_id)
+
+def disconnect():
+    """Расстыковывает пару на следующем тике; оба корабля сохраняют скорость."""
+    command("disconnect")
+
+def launch(path):
+    """Запускает скрипт по пути path на пристыкованном корабле, заменяя его текущий скрипт."""
+    if not isinstance(path, str) or not path or "\0" in path:
+        raise ValueError("Script path must be a non-empty string without NUL")
+    command("launch", launch=path)
+
+def getConnection(timeout=2.0) -> dict:
+    """connected — ID партнёра или None; readyToConnect — готовность к стыковке."""
+    return _request("get_connection", timeout=timeout)
 
 # модули
 
@@ -257,14 +283,11 @@ class Storage:
             for item in _request("get_storage", module=self.name, timeout=timeout)
         }
 
-    def readyToRecieve(self):
-        command("ready_to_recieve", module=self.name)
-
-    def notReadyToRecieve(self):
-        command("not_ready_to_recieve", module=self.name)
-
-    def transfer(self, id, resource):
-        command("transfer", module=self.name, value=(id, resource))
+    def transfer(self, resource):
+        """Передаёт одну единицу ресурса в свободный склад пристыкованного корабля."""
+        if not isinstance(resource, str) or not resource:
+            raise ValueError("Resource name must be a non-empty string")
+        command("transfer", module=self.name, value=resource)
 
 
 
@@ -304,6 +327,31 @@ class Drill:
     def disable(self):
         """Выключает бур."""
         command("disable", module=self.name)
+
+
+class Grab:
+    name = "grab"
+
+    def __init__(self, name):
+        self.name = name
+
+    def grab(self, asteroid_id):
+        """Захватывает свободный астероид на расстоянии не больше 10 на следующем тике."""
+        if isinstance(asteroid_id, bool) or not isinstance(asteroid_id, int) or asteroid_id < 0:
+            raise ValueError("Asteroid ID must be a non-negative integer")
+        command("grab", module=self.name, value=asteroid_id)
+
+    def release(self):
+        """Отпускает удерживаемый астероид на следующем тике, сохраняя его движение."""
+        command("release", module=self.name)
+
+    def getGrabbed(self, timeout=2.0):
+        """Возвращает ID захваченного астероида или None, если модуль свободен."""
+        return _request("get_grabbed", module=self.name, timeout=timeout)["asteroid_id"]
+
+    def getRadius(self, timeout=2.0) -> float:
+        """Возвращает радиус захвата; по умолчанию 10."""
+        return float(_request("get_radius", module=self.name, timeout=timeout)["radius"])
 
 
 class Scanner:
@@ -386,7 +434,7 @@ class Shipyard:
         return _request("get_queue", module=self.name, timeout=timeout)
 
     def constructCraft(self):
-        """Ставит строительство пустого корабля в очередь; команда без подтверждения."""
+        """Строит пустой корабль с автоматической стыковкой; при занятом узле заказ ждёт."""
         command("construct_craft", module=self.name)
 
     def addModule(self, craft_id, module_name):

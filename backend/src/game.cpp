@@ -62,15 +62,107 @@ World::World() {
     Start();
 }
 
+World::~World()
+{
+    StopScripts();
+}
+
+void World::StopScripts()
+{
+    for (const auto& entry : entities_)
+        if (entry.second->GetType() == ENTITY_TYPE::CRAFT)
+            static_cast<Craft*>(entry.second.get())->StopScript();
+    for (const auto& entity : pending_spawn_)
+        if (entity->GetType() == ENTITY_TYPE::CRAFT)
+            static_cast<Craft*>(entity.get())->StopScript();
+}
+
+void World::QueueConnection(std::size_t source, std::optional<std::size_t> target)
+{
+    std::lock_guard lock(craft_commands_mutex_);
+    craft_commands_.push_back({source, target, {}, {}});
+}
+
+void World::QueueLaunch(std::size_t source, std::string filename)
+{
+    if (filename.empty() || filename.find('\0') != std::string::npos)
+        throw std::invalid_argument("Script path must not be empty or contain NUL");
+    std::lock_guard lock(craft_commands_mutex_);
+    craft_commands_.push_back({source, std::nullopt, std::move(filename), {}});
+}
+
+void World::QueueGrab(std::size_t source, std::string module, std::optional<std::size_t> target)
+{
+    std::lock_guard lock(craft_commands_mutex_);
+    craft_commands_.push_back({source, target, {}, std::move(module)});
+}
+
+void World::ProcessCraftCommands()
+{
+    std::vector<CraftCommand> commands;
+    {
+        std::lock_guard lock(craft_commands_mutex_);
+        commands.swap(craft_commands_);
+    }
+    for (const auto& command : commands)
+    {
+        const auto source = entities_.find(command.source);
+        if (source == entities_.end() || source->second->GetType() != ENTITY_TYPE::CRAFT ||
+            pending_destroy_.count(command.source))
+            continue;
+        auto* craft = static_cast<Craft*>(source->second.get());
+        if (!command.grab_module.empty())
+        {
+            for (auto* module : craft->GetModules())
+            {
+                if (module->GetType() != MODULE_TYPE::GRAB || module->GetName() != command.grab_module)
+                    continue;
+                auto* grab = static_cast<GrabModule*>(module);
+                if (!command.target)
+                    grab->Release();
+                else
+                {
+                    const auto target = entities_.find(*command.target);
+                    if (target != entities_.end() && target->second->GetType() == ENTITY_TYPE::ASTEROID &&
+                        !pending_destroy_.count(*command.target))
+                        grab->Grab(static_cast<Asteroid*>(target->second.get()));
+                }
+                break;
+            }
+            continue;
+        }
+        if (!command.launch.empty())
+        {
+            Craft* partner;
+            {
+                std::lock_guard lock(Craft::connection_mutex_);
+                partner = craft->connected;
+            }
+            // Script replacement joins the old reader, so do not hold connection/state locks.
+            // Entity lifetimes are stable here on the world thread, between updates.
+            if (partner && !pending_destroy_.count(partner->GetId()))
+                partner->LaunchScript(command.launch);
+            continue;
+        }
+        if (!command.target)
+        {
+            craft->Disconnect();
+            continue;
+        }
+        const auto target = entities_.find(*command.target);
+        if (target != entities_.end() && target->second->GetType() == ENTITY_TYPE::CRAFT &&
+            !pending_destroy_.count(*command.target))
+            craft->Connect(static_cast<Craft*>(target->second.get()));
+    }
+}
+
 void World::Start() {
     auto shipyard = std::make_unique<Craft>(Vector2(0, 0), "Shipyard");
     shipyard->AddModule(MODULE_TYPE::SHIPYARD);
     shipyard->AddModule(MODULE_TYPE::FACTORY);
     for (int i = 0; i < 6; ++i)
-    {
-        auto& storage = static_cast<StorageModule&>(shipyard->AddModule(MODULE_TYPE::STORAGE));
-        storage.ReadyForRecieve();
-    }
+        shipyard->AddModule(MODULE_TYPE::STORAGE);
+    shipyard->SetReadyToConnect(true);
     // Ten reactors can sustain the factory (20/s) and shipyard (30/s).
     for (int i = 0; i < 10; ++i)
         shipyard->AddModule(MODULE_TYPE::POWER);
@@ -81,6 +173,7 @@ void World::Start() {
     miner->AddModule(MODULE_TYPE::STORAGE);
     miner->AddModule(MODULE_TYPE::RCS);
     miner->AddModule(MODULE_TYPE::DRILL);
+    miner->AddModule(MODULE_TYPE::GRAB);
     miner->AddModule(MODULE_TYPE::SCANNER);
     miner->AddModule(MODULE_TYPE::POWER);
     auto& fuel_tank = static_cast<FuelTankModule&>(miner->AddModule(MODULE_TYPE::FUEL_TANK));
@@ -94,6 +187,11 @@ void World::Start() {
 }
 
 void World::Restart() {
+    StopScripts();
+    {
+        std::lock_guard lock(craft_commands_mutex_);
+        craft_commands_.clear();
+    }
     entities_.clear();
     pending_spawn_.clear();
     pending_destroy_.clear();
@@ -104,6 +202,7 @@ void World::Restart() {
 
 
 void World::Update(float delta_time) {
+    ProcessCraftCommands();
     updating_ = true;
     try
     {
@@ -113,7 +212,12 @@ void World::Update(float delta_time) {
                 continue;
 
             entity.second->Advance(delta_time);
-            entity.second->Update(delta_time);
+        }
+        // Advance each assembly once before any module changes its velocity.
+        for (auto& entity : entities_)
+        {
+            if (pending_destroy_.count(entity.first) == 0)
+                entity.second->Update(delta_time);
         }
     }
     catch (...)
@@ -156,6 +260,9 @@ void World::DestroyEntity(Entity* entity)
     if (it == entities_.end() || it->second.get() != entity)
         return;
 
+    if (entity->GetType() == ENTITY_TYPE::CRAFT)
+        static_cast<Craft*>(entity)->Disconnect();
+
     // Keep entities and iterators alive until the current update finishes.
     if (updating_)
         pending_destroy_.insert(it->first);
@@ -178,6 +285,23 @@ Asteroid::Asteroid(Vector2 pos, std::string name)
     {
         ++resources_[RESOURCES[type_dist(gen)].type];
     }
+}
+
+Asteroid::~Asteroid()
+{
+    std::lock_guard lock(Craft::connection_mutex_);
+    if (grabbed_by_)
+    {
+        grabbed_by_->grabbed_ = nullptr;
+        grabbed_by_ = nullptr;
+    }
+}
+
+void Asteroid::Advance(float delta_time)
+{
+    std::lock_guard lock(Craft::connection_mutex_);
+    if (grabbed_by_ == nullptr)
+        Entity::Advance(delta_time);
 }
 
 void Asteroid::Update(float) {}
@@ -219,47 +343,134 @@ RESOURCE_TYPE Asteroid::Mine()
 
 
 // Craft
+std::mutex Craft::connection_mutex_;
+
 Craft::Craft() : Craft(Vector2(0)) {}
 Craft::Craft(Vector2 pos, std::string name)
     : Entity(ENTITY_TYPE::CRAFT, pos, Vector2(0), 0, 0, std::move(name)) {}
 
-void Craft::RecalculateMass()
+float Craft::GetMass()
 {
-    std::lock_guard lock(state_mutex_);
-    RecalculateMassLocked();
+    auto lock = LockAssemblyState();
+    return GetMassLocked();
 }
 
-void Craft::RecalculateMassLocked()
+Craft::AssemblyLock Craft::LockAssemblyState()
 {
-    mass_ = 0;
-
-    for (const auto& module : modules_)
+    AssemblyLock lock{std::unique_lock<std::mutex>(connection_mutex_),
+        std::unique_lock<std::mutex>(state_mutex_, std::defer_lock), {}};
+    if (connected)
     {
-        for (const auto& data : MODULES_DATA)
-        {
-            if (data.type == module->GetType())
-            {
-                mass_ += data.mass;
-                break;
-            }
-        }
-
-        if (module->GetType() == MODULE_TYPE::STORAGE)
-        {
-            auto* storage = static_cast<StorageModule*>(module.get());
-            for (const auto& [resource, count] : storage->GetInventory())
-            {
-                for (const auto& data : RESOURCES)
-                {
-                    if (data.type == resource)
-                    {
-                        mass_ += data.mass * count;
-                        break;
-                    }
-                }
-            }
-        }
+        lock.partner = std::unique_lock<std::mutex>(connected->state_mutex_, std::defer_lock);
+        std::lock(lock.own, lock.partner);
     }
+    else
+        lock.own.lock();
+    return lock;
+}
+
+float Craft::GetOwnMassLocked()
+{
+    float mass = defaul_mass_;
+    for (const auto& module : modules_)
+        mass += module->GetMassLocked();
+    return mass;
+}
+
+float Craft::GetMassLocked()
+{
+    return GetOwnMassLocked() + (connected ? connected->GetOwnMassLocked() : 0);
+}
+
+bool Craft::Connect(Craft* target)
+{
+    if (target == nullptr || target == this)
+        return false;
+    std::lock_guard connection_lock(connection_mutex_);
+    if (connected || target->connected || !target->readyToConnect || world != target->world)
+        return false;
+    std::scoped_lock state_lock(state_mutex_, target->state_mutex_);
+    if (!(GetPosition().DistanceSquared(target->GetPosition()) <= 1.0f))
+        return false;
+
+    const float own_mass = GetOwnMassLocked();
+    const float target_mass = target->GetOwnMassLocked();
+    const Vector2 velocity = (GetVelocity() * own_mass + target->GetVelocity() * target_mass) /
+        (own_mass + target_mass);
+    const float angular_velocity = (GetAngularVelocity() * own_mass +
+        target->GetAngularVelocity() * target_mass) / (own_mass + target_mass);
+    target->SetPosition(GetPosition());
+    target->SetRotation(GetRotation());
+    SetVelocity(velocity);
+    target->SetVelocity(velocity);
+    SetAngularVelocity(angular_velocity);
+    target->SetAngularVelocity(angular_velocity);
+    connected = target;
+    target->connected = this;
+    readyToConnect = false;
+    target->readyToConnect = false;
+    SyncGrabbedAsteroidsLocked();
+    target->SyncGrabbedAsteroidsLocked();
+    return true;
+}
+
+void Craft::Disconnect()
+{
+    std::lock_guard lock(connection_mutex_);
+    if (connected)
+    {
+        connected->connected = nullptr;
+        connected = nullptr;
+    }
+}
+
+void Craft::SetReadyToConnect(bool ready)
+{
+    std::lock_guard lock(connection_mutex_);
+    readyToConnect = ready;
+}
+
+json::object Craft::GetConnection()
+{
+    std::lock_guard lock(connection_mutex_);
+    json::object result{{"connected", nullptr}, {"readyToConnect", readyToConnect}};
+    if (connected)
+        result["connected"] = connected->GetId();
+    return result;
+}
+
+void Craft::ApplyImpulseLocked(Vector2 impulse)
+{
+    const Vector2 velocity = GetVelocity() + impulse / GetMassLocked();
+    SetVelocity(velocity);
+    if (connected)
+        connected->SetVelocity(velocity);
+    SyncGrabbedAsteroidsLocked();
+    if (connected)
+        connected->SyncGrabbedAsteroidsLocked();
+}
+
+void Craft::SyncGrabbedAsteroidsLocked()
+{
+    for (const auto& module : modules_)
+        if (module->GetType() == MODULE_TYPE::GRAB)
+            static_cast<GrabModule*>(module.get())->SyncLocked();
+}
+
+void Craft::Advance(float delta_time)
+{
+    auto lock = LockAssemblyState();
+    if (connected && GetId() > connected->GetId())
+        return;
+    Entity::Advance(delta_time);
+    if (connected)
+    {
+        connected->SetPosition(GetPosition());
+        connected->SetRotation(GetRotation());
+    }
+    SyncGrabbedAsteroidsLocked();
+    if (connected)
+        connected->SyncGrabbedAsteroidsLocked();
 }
 
 Module& Craft::AddModule(MODULE_TYPE type)
@@ -318,6 +529,10 @@ Module& Craft::AddModuleLocked(MODULE_TYPE type)
     {
         mdl = std::make_unique<FuelTankModule>(this);
     }
+    else if(type == MODULE_TYPE::GRAB)
+    {
+        mdl = std::make_unique<GrabModule>(this);
+    }
     else
     {
         throw std::invalid_argument("Unknown module type");
@@ -328,8 +543,6 @@ Module& Craft::AddModuleLocked(MODULE_TYPE type)
     mdl->SetName(name);
     modules_.push_back(std::move(mdl));
     ++next_index;
-
-    RecalculateMassLocked();
 
     return *modules_.back();
 }
@@ -554,16 +767,12 @@ void Craft::HandlePacket(const std::string& line)
                 response["result"] = json::object{{"name", GetName()}};
             }
             else if (method == "get_mass") {
-                float mass;
-
-                {
-                    std::lock_guard lock(state_mutex_);
-                    mass = GetMass();
-                }
-
                 response["result"] = json::object{
-                    {"mass", mass},
+                    {"mass", GetMass()},
                 };
+            }
+            else if (method == "get_connection") {
+                response["result"] = GetConnection();
             }
             else if (method == "get_position") {
                 Vector2 pos;
@@ -647,6 +856,30 @@ void Craft::HandlePacket(const std::string& line)
             const auto method = json::value_to<std::string>(msg.at("method"));
             if (method == "set_name")
                 SetName(json::value_to<std::string>(msg.at("value")));
+            else if (method == "set_ready_to_connect")
+                SetReadyToConnect(msg.at("value").as_bool());
+            else if (method == "connect")
+            {
+                const auto& value = msg.at("value");
+                if ((!value.is_int64() && !value.is_uint64()) ||
+                    (value.is_int64() && value.as_int64() < 0))
+                    throw std::invalid_argument("Craft ID must be a non-negative integer");
+                if (world)
+                    world->QueueConnection(GetId(), json::value_to<std::size_t>(value));
+            }
+            else if (method == "disconnect")
+            {
+                if (world)
+                    world->QueueConnection(GetId(), std::nullopt);
+                else
+                    Disconnect();
+            }
+            else if (method == "launch")
+            {
+                const auto filename = json::value_to<std::string>(msg.at("launch"));
+                if (world)
+                    world->QueueLaunch(GetId(), filename);
+            }
             else if (method == "save_data")
             {
                 const auto data = json::value_to<std::string>(msg.at("value"));
@@ -666,6 +899,7 @@ void Craft::HandlePacket(const std::string& line)
 Craft::~Craft()
 {
     StopScript();
+    Disconnect();
 }
 
 void Craft::StopScript()
@@ -723,7 +957,6 @@ void Craft::StopScript()
 
 void Craft::Update(float delta_time)
 {
-    RecalculateMass();
     for (auto* mdl : GetModules())
     {
         mdl->Update(delta_time);
@@ -740,6 +973,11 @@ Entity::Entity(ENTITY_TYPE type, Vector2 pos, Vector2 vel, float rot, float a_ve
     : position_(pos), velocity_(vel), rotation_(rot), angular_velocity_(a_vel), type_(type),
       name_(name.find_first_not_of(" \t\r\n") == std::string::npos
           ? (type == ENTITY_TYPE::ASTEROID ? "Asteroid" : "Craft") : std::move(name)) {}
+
+float Entity::GetMass()
+{
+    return mass_;
+}
 
 Vector2 Entity::Forward()
 {
