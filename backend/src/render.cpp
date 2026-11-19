@@ -1,11 +1,13 @@
 #include "render.hpp"
 
 #include <algorithm>
+#include <array>
 #include <cerrno>
 #include <cmath>
 #include <cstdio>
 #include <deque>
 #include <filesystem>
+#include <fstream>
 #include <string>
 #include <unordered_map>
 #include <vector>
@@ -14,6 +16,7 @@
 #include <fcntl.h>
 #include <io.h>
 #include <share.h>
+#include <sys/stat.h>
 #include <windows.h>
 #else
 #include <fcntl.h>
@@ -31,6 +34,30 @@ constexpr float entity_row_height = 28.0f;
 constexpr std::size_t max_log_lines = 1000;
 constexpr std::size_t max_log_line_bytes = 4096;
 constexpr std::size_t max_log_file_bytes = 4 * 1024 * 1024;
+constexpr std::size_t max_script_bytes = 1024 * 1024;
+
+// Explicit instantiations can name private members. Keep this bridge local
+// so the renderer can use Craft's existing process lifecycle and saved path.
+template<class Member, typename Member::Pointer pointer>
+struct CraftScriptAccess
+{
+    friend typename Member::Pointer ScriptMember(Member) { return pointer; }
+};
+
+struct StopScriptMember
+{
+    using Pointer = void (Craft::*)();
+    friend Pointer ScriptMember(StopScriptMember);
+};
+
+struct ScriptPathMember
+{
+    using Pointer = std::string Craft::*;
+    friend Pointer ScriptMember(ScriptPathMember);
+};
+
+template struct CraftScriptAccess<StopScriptMember, &Craft::StopScript>;
+template struct CraftScriptAccess<ScriptPathMember, &Craft::script_path_>;
 
 // A file captures C/C++ stderr and inherited Python stderr without pipe
 // backpressure. The reader must not change the offset shared by the writers.
@@ -210,13 +237,32 @@ private:
     bool active_ = false;
 };
 
-// World's constructor launches a script before CreateGameWindow is called.
 StderrLog stderr_log;
 
 struct CraftInterfaceState
 {
     sf::String script_path;
     sf::String launched_path;
+};
+
+struct ScriptEditor
+{
+    std::filesystem::path path;
+    sf::String code;
+    std::string saved_bytes;
+    std::vector<std::size_t> line_starts{0};
+    std::size_t cursor = 0;
+    std::size_t anchor = 0;
+    std::size_t first_row = 0;
+    std::optional<std::size_t> preferred_column;
+    float scroll_x = 0.0f;
+    bool crlf = false;
+    bool bom = false;
+    bool modified = false;
+    bool dragging = false;
+    bool confirm_discard = false;
+    bool closing_game = false;
+    sf::String message;
 };
 
 struct InterfaceState
@@ -233,6 +279,7 @@ struct InterfaceState
     sf::String script_path;
     std::size_t cursor = 0;
     bool editing = false;
+    std::optional<ScriptEditor> editor;
     sf::String console_input;
     std::size_t console_cursor = 0;
     bool console_editing = false;
@@ -261,9 +308,27 @@ void CloseWindow(sf::RenderWindow& window)
     auto& ui = Interface();
     ui.editing = false;
     ui.console_editing = false;
+    ui.editor.reset();
     ui.selected.reset();
     ui.font.reset();
     window.close();
+}
+
+std::string ToUtf8(const sf::String& value)
+{
+    const auto bytes = value.toUtf8();
+    return {bytes.begin(), bytes.end()};
+}
+
+sf::String FromUtf8(const std::string& bytes)
+{
+    return sf::String::fromUtf8(bytes.begin(), bytes.end());
+}
+
+sf::String AttachedScriptPath(Craft& craft)
+{
+    std::lock_guard lock(craft.send_mutex_);
+    return FromUtf8(craft.*ScriptMember(ScriptPathMember{}));
 }
 
 Entity* SelectedEntity(World* world)
@@ -292,15 +357,20 @@ void SelectEntity(sf::RenderWindow& window, World* world, std::optional<std::siz
 {
     auto& ui = Interface();
     ui.console_editing = false;
-    if (selected != ui.selected) {
+    const bool changed = selected != ui.selected;
+    if (changed) {
         if (auto* craft = dynamic_cast<Craft*>(SelectedEntity(world)))
             ui.crafts[craft->GetId()].script_path = ui.script_path;
-        ui.script_path = selected && dynamic_cast<Craft*>(world->GetEntities().at(*selected).get())
-            ? ui.crafts[*selected].script_path : sf::String{};
+        ui.script_path.clear();
     }
     ui.selected = selected;
+    auto* craft = dynamic_cast<Craft*>(SelectedEntity(world));
+    if (changed && craft) {
+        auto& state = ui.crafts[craft->GetId()];
+        ui.script_path = state.script_path.isEmpty() ? AttachedScriptPath(*craft) : state.script_path;
+    }
     ui.cursor = ui.script_path.getSize();
-    ui.editing = dynamic_cast<Craft*>(SelectedEntity(world)) != nullptr;
+    ui.editing = craft != nullptr;
     FollowSelectedEntity(window, world);
 }
 
@@ -368,9 +438,19 @@ sf::FloatRect MainMenuButtonBounds(const sf::RenderWindow& window)
                      static_cast<float>(window.getSize().x) - 202.0f), 6.0f}, {190.0f, 26.0f}};
 }
 
-sf::FloatRect RestartScriptBounds(const sf::RenderWindow& window)
+enum class ScriptAction { Run, Stop, Restart, Edit, Create };
+
+constexpr std::array script_actions{
+    ScriptAction::Run, ScriptAction::Stop, ScriptAction::Restart, ScriptAction::Edit, ScriptAction::Create
+};
+constexpr std::array script_action_titles{"Run", "Stop", "Restart", "Edit code", "New script"};
+
+sf::FloatRect ScriptButtonBounds(const sf::RenderWindow& window, std::size_t index)
 {
-    return {{SidebarWidth(window) + 12.0f, 78.0f}, {160.0f, 28.0f}};
+    const auto input = InputBounds(window);
+    const float gap = std::min(6.0f, input.size.x / 20.0f);
+    const float width = (input.size.x - gap * (script_actions.size() - 1)) / script_actions.size();
+    return {{input.position.x + index * (width + gap), 78.0f}, {width, 28.0f}};
 }
 
 sf::FloatRect ZoomBounds(const sf::RenderWindow& window, bool zoom_in)
@@ -405,6 +485,7 @@ void ResetWorldInterface(sf::RenderWindow& window)
     auto& ui = Interface();
     ui.selected.reset();
     ui.crafts.clear();
+    ui.editor.reset();
     ui.script_path.clear();
     ui.cursor = 0;
     ui.editing = false;
@@ -441,14 +522,568 @@ void LaunchSelectedScript(World* world, bool restart)
     if (!craft) return;
     auto& ui = Interface();
     auto& state = ui.crafts[craft->GetId()];
-    const sf::String path = restart && !state.launched_path.isEmpty()
-        ? state.launched_path : ui.script_path;
+    sf::String path = ui.script_path;
+    if (restart) {
+        const auto attached = AttachedScriptPath(*craft);
+        if (!attached.isEmpty()) path = attached;
+        else if (!state.launched_path.isEmpty()) path = state.launched_path;
+    }
     if (path.isEmpty()) return;
-    const auto utf8 = path.toUtf8();
-    craft->LaunchScript(std::string(utf8.begin(), utf8.end()));
+    std::error_code error;
+    const auto file = std::filesystem::absolute(std::filesystem::u8path(ToUtf8(path)), error);
+    if (error || !std::filesystem::is_regular_file(file, error)) {
+        std::cerr << "Cannot run script: " << ToUtf8(path) << '\n';
+        return;
+    }
+    const auto filename = ToUtf8(path);
+    craft->LaunchScript(filename.front() == '-' ? file.u8string() : filename);
     state.script_path = ui.script_path = path;
     ui.cursor = path.getSize();
-    if (craft->IsScriptRunning()) state.launched_path = path;
+    if (!AttachedScriptPath(*craft).isEmpty()) state.launched_path = path;
+}
+
+void StopSelectedScript(Craft& craft)
+{
+    const auto path = AttachedScriptPath(craft);
+    if (!path.isEmpty()) Interface().crafts[craft.GetId()].launched_path = path;
+    (craft.*ScriptMember(StopScriptMember{}))();
+}
+
+std::optional<std::string> ReadScriptFile(const std::filesystem::path& path, sf::String& error_text)
+{
+    std::error_code error;
+    if (!std::filesystem::is_regular_file(path, error)) {
+        error_text = "Script file not found";
+        return std::nullopt;
+    }
+    std::ifstream input(path, std::ios::binary);
+    if (!input) {
+        error_text = "Cannot open script file";
+        return std::nullopt;
+    }
+    std::string bytes(max_script_bytes + 1, '\0');
+    input.read(bytes.data(), static_cast<std::streamsize>(bytes.size()));
+    bytes.resize(static_cast<std::size_t>(input.gcount()));
+    if (input.bad() || bytes.size() > max_script_bytes) {
+        error_text = input.bad() ? "Cannot read script file" : "Script exceeds the 1 MiB editor limit";
+        return std::nullopt;
+    }
+    return bytes;
+}
+
+enum class WriteResult { Written, Exists, Failed };
+
+WriteResult WriteNewFile(const std::filesystem::path& path, const std::string& bytes, std::error_code& error)
+{
+#ifdef _WIN32
+    const int fd = ::_wopen(path.c_str(), _O_WRONLY | _O_CREAT | _O_EXCL | _O_BINARY,
+                            _S_IREAD | _S_IWRITE);
+    if (fd < 0) {
+#else
+    FILE* file = std::fopen(path.c_str(), "wbx");
+    if (!file) {
+#endif
+        if (errno == EEXIST) return WriteResult::Exists;
+        error = std::error_code(errno, std::generic_category());
+        return WriteResult::Failed;
+    }
+#ifdef _WIN32
+    FILE* file = ::_fdopen(fd, "wb");
+    if (!file) {
+        const auto open_error = errno;
+        ::_close(fd);
+        error = std::error_code(open_error, std::generic_category());
+    }
+#endif
+    if (file) {
+        if (std::fwrite(bytes.data(), 1, bytes.size(), file) != bytes.size())
+            error = std::error_code(errno ? errno : EIO, std::generic_category());
+        if (std::fclose(file) != 0 && !error)
+            error = std::error_code(errno, std::generic_category());
+    }
+    if (error) {
+        std::error_code ignored;
+        std::filesystem::remove(path, ignored);
+        return WriteResult::Failed;
+    }
+    return WriteResult::Written;
+}
+
+sf::String NormalizeNewlines(const sf::String& text)
+{
+    std::u32string normalized;
+    normalized.reserve(text.getSize());
+    for (std::size_t i = 0; i < text.getSize(); ++i) {
+        if (text[i] == U'\r') {
+            if (i + 1 < text.getSize() && text[i + 1] == U'\n') ++i;
+            normalized += U'\n';
+        }
+        else if (text[i] == U'\n' || text[i] == U'\t' || (text[i] >= U' ' && text[i] != 127)) {
+            normalized += text[i];
+        }
+    }
+    return sf::String(normalized);
+}
+
+void IndexScriptLines(ScriptEditor& editor)
+{
+    editor.line_starts.assign(1, 0);
+    for (std::size_t i = 0; i < editor.code.getSize(); ++i)
+        if (editor.code[i] == U'\n') editor.line_starts.push_back(i + 1);
+}
+
+void ShowScriptEditor(const std::filesystem::path& path, std::string bytes)
+{
+    auto code = FromUtf8(bytes);
+    const auto normalized = NormalizeNewlines(code);
+    // Avoid rewriting files with unsupported encodings or embedded control characters.
+    if (ToUtf8(code) != bytes ||
+        std::any_of(code.begin(), code.end(), [](char32_t c) {
+            return (c < U' ' && c != U'\r' && c != U'\n' && c != U'\t') || c == 127;
+        })) {
+        std::cerr << "Script editor requires a UTF-8 text file: " << path.u8string() << '\n';
+        return;
+    }
+    auto& ui = Interface();
+    auto& editor = ui.editor.emplace();
+    editor.path = path;
+    const auto first_break = bytes.find_first_of("\r\n");
+    editor.crlf = first_break != std::string::npos && bytes.compare(first_break, 2, "\r\n") == 0;
+    editor.bom = !code.isEmpty() && code[0] == U'\uFEFF';
+    editor.code = normalized;
+    if (editor.bom) editor.code.erase(0, 1);
+    editor.saved_bytes = std::move(bytes);
+    IndexScriptLines(editor);
+    ui.editing = false;
+    ui.console_editing = false;
+}
+
+void OpenScriptEditor(Craft& craft)
+{
+    auto& ui = Interface();
+    if (ui.script_path.isEmpty()) ui.script_path = AttachedScriptPath(craft);
+    const auto path = ToUtf8(ui.script_path);
+    if (path.empty()) return;
+    std::error_code error;
+    const auto file = std::filesystem::canonical(std::filesystem::u8path(path), error);
+    sf::String message = "Cannot open script file";
+    if (!error) {
+        if (auto bytes = ReadScriptFile(file, message)) {
+            ShowScriptEditor(file, std::move(*bytes));
+            return;
+        }
+    }
+    std::cerr << ToUtf8(message) << ": " << path << '\n';
+}
+
+void CreateScript(Craft& craft)
+{
+    std::error_code error;
+    const auto directory = std::filesystem::current_path(error);
+    if (error) {
+        std::cerr << "Cannot find the game directory: " << error.message() << '\n';
+        return;
+    }
+    // The packaged API is at the game root. Source checkouts keep it in scripts/.
+    std::error_code ignored;
+    const bool source_tree = !std::filesystem::is_regular_file(directory / "api.py", ignored) &&
+        std::filesystem::is_regular_file(directory / "scripts" / "api.py", ignored);
+    const std::string starter = std::string("import time\n") +
+        (source_tree ? "import scripts.api as ship\n" : "import api as ship\n") +
+        "\nship.start()\n\nwhile ship.is_running():\n    time.sleep(0.1)\n";
+    for (std::size_t index = 1;; ++index) {
+        const auto name = index == 1 ? std::string("new_script.py")
+                                    : "new_script_" + std::to_string(index) + ".py";
+        const auto path = directory / name;
+        const auto result = WriteNewFile(path, starter, error);
+        if (result == WriteResult::Exists) continue;
+        if (result == WriteResult::Failed) {
+            std::cerr << "Cannot create " << name << ": " << error.message() << '\n';
+            return;
+        }
+        auto& ui = Interface();
+        ui.crafts[craft.GetId()].script_path = ui.script_path = FromUtf8(name);
+        ui.cursor = ui.script_path.getSize();
+        ShowScriptEditor(path, starter);
+        return;
+    }
+}
+
+void SaveScript(ScriptEditor& editor)
+{
+    editor.confirm_discard = false;
+    editor.closing_game = false;
+    if (!editor.modified) return;
+    auto bytes = ToUtf8(editor.code);
+    if (editor.crlf) {
+        std::string converted;
+        for (const auto c : bytes) {
+            if (c == '\n') converted += '\r';
+            converted += c;
+        }
+        bytes = std::move(converted);
+    }
+    if (editor.bom) bytes.insert(0, "\xEF\xBB\xBF");
+    if (bytes.size() > max_script_bytes) {
+        editor.message = "Script exceeds the 1 MiB editor limit";
+        return;
+    }
+    sf::String message;
+    const auto current = ReadScriptFile(editor.path, message);
+    if (!current || *current != editor.saved_bytes) {
+        editor.message = "The file changed on disk. Copy your edits before closing.";
+        return;
+    }
+    // Write beside the original so a failed write leaves the script intact.
+    std::filesystem::path temporary;
+    std::error_code error;
+    for (std::size_t index = 1;; ++index) {
+        temporary = editor.path;
+        temporary += ".asteroid-" + std::to_string(index) + ".tmp";
+        if (WriteNewFile(temporary, bytes, error) != WriteResult::Exists) break;
+    }
+    if (error) {
+        editor.message = FromUtf8("Cannot save script: " + error.message());
+        return;
+    }
+#ifndef _WIN32
+    const auto original = std::filesystem::status(editor.path, error);
+    if (!error) std::filesystem::permissions(temporary, original.permissions(), error);
+#endif
+    if (!error) std::filesystem::rename(temporary, editor.path, error);
+    if (error) {
+        std::error_code ignored;
+        std::filesystem::remove(temporary, ignored);
+        editor.message = FromUtf8("Cannot save script: " + error.message());
+        return;
+    }
+    editor.saved_bytes = std::move(bytes);
+    editor.modified = false;
+    editor.message = "Script saved";
+}
+
+struct ScriptEditorLayout
+{
+    sf::FloatRect panel;
+    sf::FloatRect code;
+    sf::FloatRect save;
+    sf::FloatRect close;
+    sf::Vector2f status;
+};
+
+ScriptEditorLayout ScriptEditorBounds(const sf::RenderWindow& window)
+{
+    const auto size = sf::Vector2f(window.getSize());
+    const float margin = std::min(24.0f, std::min(size.x, size.y) * 0.04f);
+    const sf::FloatRect panel{{margin, margin}, size - sf::Vector2f(2.0f * margin, 2.0f * margin)};
+    const float bottom = panel.position.y + panel.size.y;
+    const float right = panel.position.x + panel.size.x;
+    const float button_width = std::min(104.0f, panel.size.x * 0.3f);
+    return {
+        panel,
+        {{panel.position.x + 70.0f, panel.position.y + 39.0f},
+         {std::max(0.0f, panel.size.x - 82.0f), std::max(0.0f, panel.size.y - 112.0f)}},
+        {{right - 20.0f - 2.0f * button_width, bottom - 40.0f}, {button_width, 28.0f}},
+        {{right - 12.0f - button_width, bottom - 40.0f}, {button_width, 28.0f}},
+        {panel.position.x + 12.0f, bottom - 63.0f}
+    };
+}
+
+std::size_t EditorRow(const ScriptEditor& editor, std::size_t position)
+{
+    return std::upper_bound(editor.line_starts.begin(), editor.line_starts.end(), position) -
+           editor.line_starts.begin() - 1;
+}
+
+std::size_t EditorLineEnd(const ScriptEditor& editor, std::size_t row)
+{
+    return row + 1 < editor.line_starts.size() ? editor.line_starts[row + 1] - 1 : editor.code.getSize();
+}
+
+sf::Text EditorLine(const ScriptEditor& editor, std::size_t row)
+{
+    const auto start = editor.line_starts[row];
+    return sf::Text(*Interface().font, editor.code.substring(start, EditorLineEnd(editor, row) - start), text_size);
+}
+
+std::size_t EditorVisibleRows(const sf::FloatRect& code)
+{
+    return static_cast<std::size_t>(std::max(1.0f, std::floor(code.size.y / line_height)));
+}
+
+void ClampEditorScroll(ScriptEditor& editor, std::size_t visible_rows)
+{
+    const auto count = editor.line_starts.size();
+    editor.first_row = std::min(editor.first_row, count > visible_rows ? count - visible_rows : 0);
+}
+
+void RevealEditorCursor(const sf::FloatRect& bounds, ScriptEditor& editor)
+{
+    const auto row = EditorRow(editor, editor.cursor);
+    const auto visible_rows = EditorVisibleRows(bounds);
+    if (row < editor.first_row) editor.first_row = row;
+    if (row >= editor.first_row + visible_rows) editor.first_row = row - visible_rows + 1;
+    ClampEditorScroll(editor, visible_rows);
+    const auto text = EditorLine(editor, row);
+    const float x = text.findCharacterPos(editor.cursor - editor.line_starts[row]).x;
+    const float width = std::max(1.0f, bounds.size.x - 12.0f);
+    editor.scroll_x = std::clamp(editor.scroll_x, std::max(0.0f, x - width), x);
+}
+
+std::size_t EditorPositionAt(const ScriptEditor& editor, const sf::FloatRect& area, sf::Vector2f point)
+{
+    const auto offset = static_cast<std::size_t>(std::max(0.0f, (point.y - area.position.y) / line_height));
+    const auto row = std::min({editor.first_row + offset, editor.line_starts.size() - 1,
+                               editor.first_row + EditorVisibleRows(area) - 1});
+    const auto text = EditorLine(editor, row);
+    const float x = point.x - area.position.x - 4.0f + editor.scroll_x;
+    std::size_t first = 0;
+    std::size_t last = text.getString().getSize();
+    while (first < last) {
+        const auto middle = first + (last - first) / 2;
+        const float boundary = (text.findCharacterPos(middle).x + text.findCharacterPos(middle + 1).x) / 2.0f;
+        if (x < boundary) last = middle;
+        else first = middle + 1;
+    }
+    return editor.line_starts[row] + first;
+}
+
+void EditScriptSelection(ScriptEditor& editor, const sf::String& replacement)
+{
+    const auto first = std::min(editor.cursor, editor.anchor);
+    const auto count = std::max(editor.cursor, editor.anchor) - first;
+    if (editor.code.getSize() - count + replacement.getSize() > max_script_bytes) {
+        editor.message = "Script exceeds the 1 MiB editor limit";
+        return;
+    }
+    if (!count && replacement.isEmpty()) return;
+    editor.code.erase(first, count);
+    editor.code.insert(first, replacement);
+    editor.cursor = editor.anchor = first + replacement.getSize();
+    editor.preferred_column.reset();
+    editor.modified = true;
+    editor.confirm_discard = false;
+    editor.closing_game = false;
+    editor.message.clear();
+    IndexScriptLines(editor);
+}
+
+void RequestCloseEditor(sf::RenderWindow& window, bool closing_game = false)
+{
+    auto& editor = *Interface().editor;
+    if (editor.modified) {
+        editor.confirm_discard = true;
+        editor.closing_game = closing_game;
+    }
+    else if (closing_game) CloseWindow(window);
+    else Interface().editor.reset();
+}
+
+void SaveEditor(sf::RenderWindow& window)
+{
+    auto& editor = *Interface().editor;
+    const bool close = editor.confirm_discard;
+    const bool exit = editor.closing_game;
+    SaveScript(editor);
+    if (close && !editor.modified) RequestCloseEditor(window, exit);
+}
+
+void EditScriptKey(ScriptEditor& editor, const sf::Event::KeyPressed& key, std::size_t visible_rows)
+{
+    using Key = sf::Keyboard::Key;
+    const bool shortcut = key.control || key.system;
+    if (shortcut && key.code == Key::A) {
+        editor.anchor = 0;
+        editor.cursor = editor.code.getSize();
+        editor.preferred_column.reset();
+        return;
+    }
+    if (shortcut && (key.code == Key::C || key.code == Key::X)) {
+        if (editor.cursor != editor.anchor) {
+            const auto first = std::min(editor.cursor, editor.anchor);
+            const auto last = std::max(editor.cursor, editor.anchor);
+            sf::Clipboard::setString(editor.code.substring(first, last - first));
+            if (key.code == Key::X) EditScriptSelection(editor, {});
+        }
+        return;
+    }
+    if (shortcut && key.code == Key::V) {
+        EditScriptSelection(editor, NormalizeNewlines(sf::Clipboard::getString()));
+        return;
+    }
+    const auto row = EditorRow(editor, editor.cursor);
+    const auto start = editor.line_starts[row];
+    if (key.code == Key::Enter) {
+        std::size_t indent = start;
+        while (indent < editor.cursor && (editor.code[indent] == U' ' || editor.code[indent] == U'\t'))
+            ++indent;
+        EditScriptSelection(editor, sf::String(U'\n') + editor.code.substring(start, indent - start));
+        return;
+    }
+    if (key.code == Key::Tab) {
+        EditScriptSelection(editor, "    ");
+        return;
+    }
+    if (key.code == Key::Backspace || key.code == Key::Delete) {
+        if (editor.cursor == editor.anchor) {
+            if (key.code == Key::Backspace && editor.cursor > 0) --editor.anchor;
+            if (key.code == Key::Delete && editor.cursor < editor.code.getSize()) ++editor.anchor;
+        }
+        EditScriptSelection(editor, {});
+        return;
+    }
+    const bool selection = editor.cursor != editor.anchor;
+    if (key.code == Key::Up || key.code == Key::Down || key.code == Key::PageUp || key.code == Key::PageDown) {
+        if (!editor.preferred_column) editor.preferred_column = editor.cursor - start;
+        const auto amount = key.code == Key::PageUp || key.code == Key::PageDown ? visible_rows : 1;
+        const auto target = key.code == Key::Up || key.code == Key::PageUp
+            ? row - std::min(row, amount) : std::min(editor.line_starts.size() - 1, row + amount);
+        editor.cursor = std::min(editor.line_starts[target] + *editor.preferred_column,
+                                 EditorLineEnd(editor, target));
+    }
+    else {
+        switch (key.code) {
+        case Key::Left:
+            if (selection && !key.shift) editor.cursor = std::min(editor.cursor, editor.anchor);
+            else if (editor.cursor > 0) --editor.cursor;
+            break;
+        case Key::Right:
+            if (selection && !key.shift) editor.cursor = std::max(editor.cursor, editor.anchor);
+            else if (editor.cursor < editor.code.getSize()) ++editor.cursor;
+            break;
+        case Key::Home: editor.cursor = shortcut ? 0 : start; break;
+        case Key::End: editor.cursor = shortcut ? editor.code.getSize() : EditorLineEnd(editor, row); break;
+        default: return;
+        }
+        editor.preferred_column.reset();
+    }
+    if (!key.shift) editor.anchor = editor.cursor;
+}
+
+void HandleScriptEditorEvent(sf::RenderWindow& window, const sf::Event& event)
+{
+    auto& editor = *Interface().editor;
+    const auto bounds = ScriptEditorBounds(window);
+    if (const auto* mouse = event.getIf<sf::Event::MouseButtonPressed>()) {
+        if (mouse->button != sf::Mouse::Button::Left) return;
+        const auto point = sf::Vector2f(mouse->position);
+        if (bounds.save.contains(point)) SaveEditor(window);
+        else if (bounds.close.contains(point)) {
+            if (!editor.confirm_discard) RequestCloseEditor(window);
+            else if (editor.closing_game) CloseWindow(window);
+            else Interface().editor.reset();
+        }
+        else if (bounds.code.contains(point) && Interface().font) {
+            editor.cursor = EditorPositionAt(editor, bounds.code, point);
+            if (!sf::Keyboard::isKeyPressed(sf::Keyboard::Key::LShift) &&
+                !sf::Keyboard::isKeyPressed(sf::Keyboard::Key::RShift)) editor.anchor = editor.cursor;
+            editor.preferred_column.reset();
+            editor.dragging = true;
+        }
+    }
+    else if (event.is<sf::Event::MouseButtonReleased>()) editor.dragging = false;
+    else if (const auto* mouse = event.getIf<sf::Event::MouseMoved>()) {
+        if (editor.dragging && Interface().font)
+            editor.cursor = EditorPositionAt(editor, bounds.code, sf::Vector2f(mouse->position));
+    }
+    else if (const auto* wheel = event.getIf<sf::Event::MouseWheelScrolled>()) {
+        if (!bounds.code.contains(sf::Vector2f(wheel->position))) return;
+        if (wheel->wheel == sf::Mouse::Wheel::Horizontal ||
+            sf::Keyboard::isKeyPressed(sf::Keyboard::Key::LShift) ||
+            sf::Keyboard::isKeyPressed(sf::Keyboard::Key::RShift)) {
+            editor.scroll_x = std::max(0.0f, editor.scroll_x - wheel->delta * 48.0f);
+        }
+        else {
+            const auto amount = static_cast<std::size_t>(std::ceil(std::abs(wheel->delta) * 3.0f));
+            if (wheel->delta > 0) editor.first_row -= std::min(editor.first_row, amount);
+            else editor.first_row += amount;
+            ClampEditorScroll(editor, EditorVisibleRows(bounds.code));
+        }
+    }
+    else if (const auto* key = event.getIf<sf::Event::KeyPressed>()) {
+        if (key->code == sf::Keyboard::Key::Escape) {
+            if (editor.confirm_discard) {
+                editor.confirm_discard = false;
+                editor.closing_game = false;
+            }
+            else RequestCloseEditor(window);
+        }
+        else if ((key->control || key->system) && key->code == sf::Keyboard::Key::S) SaveEditor(window);
+        else {
+            const auto old_cursor = editor.cursor;
+            const auto old_anchor = editor.anchor;
+            EditScriptKey(editor, *key, EditorVisibleRows(bounds.code));
+            if (Interface().font && (editor.cursor != old_cursor || editor.anchor != old_anchor ||
+                                     key->code == sf::Keyboard::Key::Delete))
+                RevealEditorCursor(bounds.code, editor);
+        }
+    }
+    else if (const auto* text = event.getIf<sf::Event::TextEntered>()) {
+        if (text->unicode >= U' ' && text->unicode != 127) {
+            EditScriptSelection(editor, sf::String(text->unicode));
+            if (Interface().font) RevealEditorCursor(bounds.code, editor);
+        }
+    }
+}
+
+void DrawEditorLines(sf::RenderWindow& window, ScriptEditor& editor, const sf::FloatRect& area)
+{
+    if (area.size.x <= 0.0f || area.size.y < line_height) return;
+    const auto visible_rows = EditorVisibleRows(area);
+    ClampEditorScroll(editor, visible_rows);
+    const auto end = std::min(editor.first_row + visible_rows, editor.line_starts.size());
+    const auto cursor_row = EditorRow(editor, editor.cursor);
+    const auto selection_start = std::min(editor.cursor, editor.anchor);
+    const auto selection_end = std::max(editor.cursor, editor.anchor);
+    const auto row_y = [&](std::size_t row) {
+        return area.position.y + (row - editor.first_row) * line_height;
+    };
+    auto& font = *Interface().font;
+    for (auto row = editor.first_row; row < end; ++row) {
+        sf::Text number(font, std::to_string(row + 1), text_size);
+        number.setFillColor(row == cursor_row ? sf::Color(210, 220, 235) : sf::Color(125, 140, 158));
+        number.setPosition({area.position.x - 10.0f - number.getLocalBounds().size.x, row_y(row) + 1.0f});
+        window.draw(number);
+    }
+    const auto view = window.getView();
+    const auto size = sf::Vector2f(window.getSize());
+    auto clipped = view;
+    clipped.setScissor({{area.position.x / size.x, area.position.y / size.y},
+                        {area.size.x / size.x, area.size.y / size.y}});
+    window.setView(clipped);
+    sf::RectangleShape rectangle;
+    for (auto row = editor.first_row; row < end; ++row) {
+        const auto y = row_y(row);
+        if (row == cursor_row) {
+            rectangle.setSize({area.size.x, line_height});
+            rectangle.setPosition({area.position.x, y});
+            rectangle.setFillColor(sf::Color(37, 48, 62));
+            window.draw(rectangle);
+        }
+        const auto start = editor.line_starts[row];
+        const auto finish = EditorLineEnd(editor, row);
+        auto text = EditorLine(editor, row);
+        text.setPosition({std::round(area.position.x + 4.0f - editor.scroll_x), std::round(y + 1.0f)});
+        const auto x_at = [&](std::size_t position) { return text.findCharacterPos(position - start).x; };
+        if (selection_start != selection_end && selection_start <= finish && selection_end > start) {
+            const float from = x_at(std::max(start, selection_start));
+            float to = x_at(std::min(finish, selection_end));
+            if (selection_end > finish) to += font.getGlyph(U' ', text_size, false).advance;
+            rectangle.setSize({to - from, line_height});
+            rectangle.setPosition({from, y});
+            rectangle.setFillColor(sf::Color(58, 93, 126));
+            window.draw(rectangle);
+        }
+        text.setFillColor(sf::Color(230, 235, 243));
+        window.draw(text);
+        if (row == cursor_row && window.hasFocus()) {
+            rectangle.setSize({1.0f, line_height - 2.0f});
+            rectangle.setPosition({x_at(editor.cursor), y + 1.0f});
+            rectangle.setFillColor(sf::Color(235, 241, 250));
+            window.draw(rectangle);
+        }
+    }
+    window.setView(view);
 }
 
 Craft* ConsoleTarget(World* world)
@@ -760,7 +1395,12 @@ void DrawInterface(sf::RenderWindow& window, World* world)
         panel(bounds, !enabled ? sf::Color(30, 34, 40)
                               : hovered ? sf::Color(65, 85, 105) : sf::Color(42, 54, 68));
         sf::Text text(*ui.font, title, text_size);
-        const auto local = text.getLocalBounds();
+        auto local = text.getLocalBounds();
+        const float width = std::max(1.0f, bounds.size.x - 6.0f);
+        if (local.size.x > width) {
+            text.setCharacterSize(static_cast<unsigned int>(std::max(1.0f, std::floor(text_size * width / local.size.x))));
+            local = text.getLocalBounds();
+        }
         text.setPosition(bounds.position + (bounds.size - local.size) / 2.0f - local.position);
         text.setFillColor(enabled ? sf::Color::White : sf::Color(120, 130, 145));
         window.draw(text);
@@ -785,22 +1425,27 @@ void DrawInterface(sf::RenderWindow& window, World* world)
     panel({{sidebar_width, 0.0f}, {size.x - sidebar_width, 36.0f}}, sf::Color(20, 24, 30, 245));
     if (auto* entity = SelectedEntity(world)) {
         auto* craft = dynamic_cast<Craft*>(entity);
+        const bool running = craft && craft->IsScriptRunning();
         const auto bounds = InputBounds(window);
         panel({{sidebar_width, 0.0f}, {size.x - sidebar_width, 116.0f}}, sf::Color(20, 24, 30, 245));
         fitted_label(EntityLabel(entity) +
-                  (craft ? " | Script path (Enter to launch)" : " | This entity cannot run scripts"),
+                  (craft ? (running ? " | Running" : " | Stopped") : " | This entity cannot run scripts"),
               {bounds.position.x, 12.0f}, MainMenuButtonBounds(window).position.x - bounds.position.x - 12.0f,
-              sf::Color::White);
-        panel(bounds, ui.editing ? sf::Color(46, 61, 75) : sf::Color(35, 40, 48));
-        DrawInput(window, bounds, ui.script_path, ui.cursor, ui.editing,
-                  craft ? sf::Color::White : sf::Color(140, 140, 140));
+              running ? sf::Color(110, 220, 140) : sf::Color::White);
         if (craft) {
-            const bool running = craft->IsScriptRunning();
-            button(RestartScriptBounds(window), "Restart script",
-                   !ui.script_path.isEmpty() || !ui.crafts[craft->GetId()].launched_path.isEmpty());
-            label(running ? "Running" : "Stopped",
-                  {RestartScriptBounds(window).position.x + 172.0f, 83.0f},
-                  running ? sf::Color(110, 220, 140) : sf::Color(160, 170, 185));
+            panel(bounds, ui.editing ? sf::Color(46, 61, 75) : sf::Color(35, 40, 48));
+            DrawInput(window, bounds, ui.script_path, ui.cursor, ui.editing, sf::Color::White);
+            const bool has_path = !ui.script_path.isEmpty();
+            if (!has_path) {
+                const float padding = ui.editing ? 20.0f : 8.0f;
+                fitted_label("Python script path (Enter to run)", bounds.position + sf::Vector2f(padding, 5.0f),
+                             bounds.size.x - padding - 8.0f, sf::Color(150, 160, 175));
+            }
+            const bool can_edit = has_path || !AttachedScriptPath(*craft).isEmpty();
+            const bool can_restart = can_edit || !ui.crafts[craft->GetId()].launched_path.isEmpty();
+            const std::array enabled{has_path, running, can_restart, can_edit, true};
+            for (std::size_t i = 0; i < script_actions.size(); ++i)
+                button(ScriptButtonBounds(window, i), script_action_titles[i], enabled[i]);
         }
     }
     button(MainMenuButtonBounds(window), sf::String(U"В главное меню"));
@@ -850,6 +1495,24 @@ void DrawInterface(sf::RenderWindow& window, World* world)
     else
         DrawInput(window, console_bounds, ui.console_input, ui.console_cursor, ui.console_editing,
                   sf::Color::White);
+
+    if (ui.editor) {
+        auto& editor = *ui.editor;
+        const auto bounds = ScriptEditorBounds(window);
+        panel({{0.0f, 0.0f}, size}, sf::Color(8, 12, 17, 195));
+        panel(bounds.panel, sf::Color(29, 36, 46));
+        const sf::String title = sf::String(editor.modified ? "* " : "") + "Edit code  |  " + ui.script_path;
+        fitted_label(title, bounds.panel.position + sf::Vector2f(12.0f, 10.0f),
+                     bounds.panel.size.x - 24.0f, sf::Color(230, 235, 243));
+        panel(bounds.code, sf::Color(20, 25, 33));
+        DrawEditorLines(window, editor, bounds.code);
+        const sf::String status = editor.confirm_discard ? sf::String("Unsaved changes. Save, discard, or press Esc to keep editing.")
+            : !editor.message.isEmpty() ? editor.message : sf::String("Ctrl/Cmd+S: save  |  Tab: indent  |  Esc: close");
+        fitted_label(status, bounds.status, bounds.panel.size.x - 24.0f,
+                     editor.confirm_discard ? sf::Color(255, 199, 114) : sf::Color(165, 180, 201));
+        button(bounds.save, "Save", editor.modified);
+        button(bounds.close, editor.confirm_discard ? "Discard" : "Close");
+    }
     window.setView(world_view);
 }
 } // namespace
@@ -880,8 +1543,9 @@ void HandleEvents(sf::RenderWindow& window, World* world)
 
     while (const std::optional event = window.pollEvent()) {
         if (event->is<sf::Event::Closed>()) {
-            CloseWindow(window);
-            return;
+            if (ui.editor) RequestCloseEditor(window, true);
+            else CloseWindow(window);
+            if (!window.isOpen()) return;
         }
         else if (const auto* resized = event->getIf<sf::Event::Resized>()) {
             if (resized->size.x > 0 && resized->size.y > 0) {
@@ -895,9 +1559,14 @@ void HandleEvents(sf::RenderWindow& window, World* world)
             ui.editing = false;
             ui.console_editing = false;
             ui.save_editing = false;
+            if (ui.editor) ui.editor->dragging = false;
         }
         else if (ui.main_menu) {
             HandleMainMenuEvent(window, world, *event);
+            if (!window.isOpen()) return;
+        }
+        else if (ui.editor) {
+            HandleScriptEditorEvent(window, *event);
             if (!window.isOpen()) return;
         }
         else if (const auto* mouse = event->getIf<sf::Event::MouseButtonPressed>()) {
@@ -938,16 +1607,28 @@ void HandleEvents(sf::RenderWindow& window, World* world)
                 }
                 continue;
             }
-            if (SelectedEntity(world) && point.y < 116.0f) {
-                if (RestartScriptBounds(window).contains(point)) {
-                    ui.editing = false;
-                    LaunchSelectedScript(world, true);
+            if (point.y < 116.0f) {
+                if (auto* entity = SelectedEntity(world)) {
+                    auto* craft = dynamic_cast<Craft*>(entity);
+                    ui.editing = craft && InputBounds(window).contains(point);
+                    ui.cursor = ui.script_path.getSize();
+                    if (craft) {
+                        for (std::size_t i = 0; i < script_actions.size(); ++i) {
+                            if (!ScriptButtonBounds(window, i).contains(point)) continue;
+                            switch (script_actions[i]) {
+                            case ScriptAction::Run: LaunchSelectedScript(world, false); break;
+                            case ScriptAction::Stop:
+                                if (craft->IsScriptRunning()) StopSelectedScript(*craft);
+                                break;
+                            case ScriptAction::Restart: LaunchSelectedScript(world, true); break;
+                            case ScriptAction::Edit: OpenScriptEditor(*craft); break;
+                            case ScriptAction::Create: CreateScript(*craft); break;
+                            }
+                            break;
+                        }
+                    }
                     continue;
                 }
-                ui.editing = InputBounds(window).contains(point) &&
-                             dynamic_cast<Craft*>(SelectedEntity(world));
-                ui.cursor = ui.script_path.getSize();
-                continue;
             }
             if (point.y < 36.0f) {
                 ui.editing = false;
@@ -1019,7 +1700,8 @@ void HandleEvents(sf::RenderWindow& window, World* world)
         }
     }
 
-    if (ui.main_menu || !window.isOpen() || !window.hasFocus() || ui.editing || ui.console_editing || ui.selected) {
+    if (ui.main_menu || !window.isOpen() || !window.hasFocus() || ui.editor ||
+        ui.editing || ui.console_editing || ui.selected) {
         return;
     }
 

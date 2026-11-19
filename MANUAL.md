@@ -718,10 +718,11 @@ def on_message(message):
         print(ship.Storage("storage_0").getStorage())
     elif message == "stop":
         ship.Propulsion("propulsion_0").throttle(0)
+        drill = ship.Drill("drill_0")
         rcs = ship.RCS("rcs_0")
         rcs.gyro(0)
         rcs.setThrust((0, 0))
-        ship.command("disable", module="drill_0")
+        drill.disable()
 
 ship.start()
 while ship.is_running():
@@ -757,6 +758,7 @@ import api as ship
 
 ship.start()
 prop = ship.Propulsion("propulsion_0")
+drill = ship.Drill("drill_0")
 rcs = ship.RCS("rcs_0")
 
 try:
@@ -768,7 +770,7 @@ finally:
         prop.throttle(0)
         rcs.gyro(0)
         rcs.setThrust((0, 0))
-        ship.command("disable", module="drill_0")
+        drill.disable()
 ```
 
 Этот пример выключает ускорение и вращение; уже набранная линейная скорость
