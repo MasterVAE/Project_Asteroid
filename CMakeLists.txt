@@ -75,8 +75,7 @@ endif()
 
 # Install Runtime only, so the distribution does not contain dependency SDKs.
 install(TARGETS app RUNTIME DESTINATION . COMPONENT Runtime)
-install(FILES scripts/api.py scripts/demo_common.py
-    scripts/throw_asteroid.py scripts/mine_and_deliver.py MANUAL.md RECIPES.md
+install(FILES scripts/api.py MANUAL.md RECIPES.md
     DESTINATION . COMPONENT Runtime)
 if(ASTEROID_FETCH_DEPENDENCIES)
     install(FILES "${boost_SOURCE_DIR}/LICENSE_1_0.txt"

@@ -1401,7 +1401,8 @@ void DrawInterface(sf::RenderWindow& window, World* world)
             text.setCharacterSize(static_cast<unsigned int>(std::max(1.0f, std::floor(text_size * width / local.size.x))));
             local = text.getLocalBounds();
         }
-        text.setPosition(bounds.position + (bounds.size - local.size) / 2.0f - local.position);
+        const auto position = bounds.position + (bounds.size - local.size) / 2.0f - local.position;
+        text.setPosition({std::round(position.x), std::round(position.y)});
         text.setFillColor(enabled ? sf::Color::White : sf::Color(120, 130, 145));
         window.draw(text);
     };
